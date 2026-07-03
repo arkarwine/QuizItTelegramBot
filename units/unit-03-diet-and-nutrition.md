@@ -1,0 +1,27 @@
+## **UNIT 3 DIET AND NUTRITION**
+
+Diet is the food we consume regularly. Nutrition refers to ‘the process by which all living things receive the food necessary for them to grow and be healthy’. Diet and nutrition are the most fundamental of human needs – they are essential for our health, energy and growth. Just as plants obtain nutrients from the soil in which they grow, we get nutrients from the diet we eat. Therefore, we need to have a nutritious diet – a mixture of all the nutrients that our body needs to survive. Moreover, diet and nutrition are strongly linked to environmental factors. Thus, it is important to consider not only the relationship between diet and nutrition but also the influence of environmental factors on them.
+
+The nutrients essential for our body can be found in the food we eat. Foods can be classified into different groups: grains, fruits, vegetables, milk products, animal products and beans,
+
+and oily foods. These foods carry six kinds of nutrients: carbohydrates, vitamins, minerals, dietary fiber, proteins and lipids. These nutrients play a major role in maintaining good health.
+
+Grains such as rice, wheat, maize, millet, barley, and corn are energy-giving foods that provide carbohydrates. Fresh fruits and vegetables give us minerals, vitamins and fiber. Beans, milk products, and animal products such as meat, fish and eggs are a rich source of proteins. Foods such as vegetable oil, fish and other seafood, nuts and seeds, eggs, yogurt, milk, etc. are energy- giving foods **1. that provide fatty acids** . Physicians and nutritionists recommend that we should have a balanced diet that consists of a variety of foods in order to stay healthy. A balanced diet simply means eating more fruits, vegetables and grains, and consuming less food high in fat, sugar and cholesterol. If we have a balanced diet, **2. we will get all our essential nutrients.** Lack of essential nutrients is a major cause of ill health. It is a balanced diet that can strengthen our immune system and protect us against illness.
+
+Moreover, one of the most important factors in remaining healthy is taking preventive medicine. Recent advances in nutrition advise people to combat illness by taking vitamins or other nutritional supplements. In fact, we need carbohydrates, not bread, and we need vitamins and minerals, not fruits and vegetables. Thus, we can reasonably assume that preventive medicine helps us stay healthy in some way.
+
+On the other hand, there are certain kinds of food which are not good for us: processed foods, refined foods and high-cholesterol foods. Many processed foods such as corned beef, canned meat and fish are not advisable. The consumption of these foods is associated with high blood pressure because they contain a lot of sodium. In addition, the artificial colorings and flavorings in processed foods are chemicals. **3.that can be harmful to our health.**
+
+Refined foods are highly processed foods – foods that have been stripped of their original nutrient content and fiber. Examples of these foods include white flour, white rice, table sugar and high fructose corn syrup. They are not good for our health because essential nutrients are lost in food processing.
+
+Also, high-cholesterol foods such as fried foods, full-fat dairy products and red meat are linked to a higher risk of heart disease. These foods are bad for us because they contain saturated fat. Therefore, we must be careful to avoid consuming foods high in sodium, fat, sugar, and cholesterol.
+
+Nutrition is closely related to the environment. If national institutions and local communities fail to protect the environments around them, their hopes of thriving in the long run will be dashed. Also, the human world will suffer from food insecurity. Forests bring many benefits to the human world. Being a haven of biodiversity, forests are an excellent source of foods such as mushrooms, bamboo shoots, nuts, berries, leaves, and tubers. Deforestation will lead to loss of biodiversity and loss of nutrition for many local communities.
+
+The root cause of environmental damage is pollution. Air, water and soil pollutants are causing adverse effects on plants, animals and humans as well. Moreover, environmental damage and loss of biodiversity adversely affect diet, nutritional value and health. Thanks to recent research on nutrition, we come to know that environmental deterioration can cause nutrition-related health problems such as malnutrition and infectious diseases. In
+
+conclusion, diet and nutrition are the very basic life-sustaining forces of all living things and the keystone of good health. In addition, they must be taken into consideration in the environmental context. A nutritious diet, **5. which is necessary for the survival and healthy development of human beings,** also depends on the environmental policies of the governments.
+
+## KEY VOCABULARY
+
+varied,balance,nutrition,nutrients,dietary,fats,effects,work,vitamins,specific,healthy,easy,infectious,ambitious,refined,processed,environmental,original,harmful,careful,joyful,preventive,communicative,adversely,heavily,quickly,illness,happiness,,kindness,consumption,deforestation,nourishment,management,biodiversity,curiosity,pollutant,servant,assistant,impolite,immature,regain,reuse,resupply,enrich,enfurce,enslave,disagree,disqualifu,misjudge,mistrust,deforestation,dehydration,poor,insignificant,ill,natural,positive,careless,global,fresh

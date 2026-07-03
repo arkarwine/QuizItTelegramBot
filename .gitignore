@@ -1,0 +1,12 @@
+.env
+__pycache__/
+*.py[cod]
+.codex-tmp/
+.ruff_cache/
+bot_state.pkl
+highlighted_usage.sqlite3
+highlighted_usage.sqlite3-shm
+highlighted_usage.sqlite3-wal
+quiz_stats.sqlite3
+quiz_stats.sqlite3-shm
+quiz_stats.sqlite3-wal

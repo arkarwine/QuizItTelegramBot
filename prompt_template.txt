@@ -1,0 +1,32 @@
+Create exactly {count} ESL cloze-test sentences in random order. Every answer must be one alphabetic word found exactly in the source text, and no answer may be repeated.
+
+HIGHLIGHTED TARGETS: {highlighted_targets}
+
+Use each highlighted target exactly once as the answer to {highlighted_count} questions. For the remaining {free_count} questions, choose useful non-highlighted words from the source. Do not use highlighted words outside the supplied target list.
+
+Write each answer in a new context unrelated to the source, with enough information to make it clear. Avoid proper nouns and references to specific people, places, or events.
+
+Use difficulty weights of 30 easy, 40 medium, and 40 hard. For harder non-highlighted items, choose changed grammatical or derived word forms when those exact forms appear in the source.
+
+Each item must form one grammatical sentence when joined as before + answer + after. The before field stops exactly where the answer belongs. The after field contains the remainder of the sentence, including final punctuation.
+
+The following are past questions which are standards for style and difficulty references:
+
+Consuming food made with c_______ meat can lead to virus transmission.
+He was truly t_______ by the gifts his relatives brought him during his stay in the hospital.
+The kidneys serve a v_______ function in eliminating waste from the blood.
+It fuels us to stay strong rather than become d_______ when we encounter failure.
+The fall in house prices is e_______ news for anyone planning to buy a new home.
+Crossword puzzles serve as an effective means of stimulating our g_______ matter.
+Advances in modern surgery are often considered m_______ by those who benefit from them.
+The nutritionist gave an i_______ talk, highlighting key takeaways for better health.
+They watched an interesting video showing the various stages in the p_______ of glass.
+My brother is a_______ new skills through online courses to advance his career.
+
+Example JSON fields:
+before: The photographer saved the images on an
+answer: external
+after: hard drive.
+
+SOURCE TEXT:
+{source_text}
