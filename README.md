@@ -20,7 +20,7 @@ During a quiz, Telegram keyboard controls provide hints, skipping, and early exi
 
 If OpenRouter returns a mixture of valid and invalid question items, the bot quietly omits the invalid items and continues with the usable questions.
 
-Each request asks the AI for 25% extra questions, with a minimum buffer of two. Only the requested number of valid questions is delivered. If the first response still does not contain enough valid items, a second response supplements the valid questions already collected.
+Each request asks the AI for 50% extra questions, rounded upward. Only the requested number of valid questions is delivered. If the first response still does not contain enough valid items, a second response supplements the valid questions already collected.
 
 Default settings work immediately:
 

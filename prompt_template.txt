@@ -1,16 +1,32 @@
-Create exactly {count} ESL cloze-test sentences in random order. Every answer must be one alphabetic word found exactly in the source text, and no answer may be repeated.
+Create exactly {count} distinct ESL cloze-test items in randomized order.
 
 HIGHLIGHTED TARGETS: {highlighted_targets}
 
-Use each highlighted target exactly once as the answer to {highlighted_count} questions. For the remaining {free_count} questions, choose useful non-highlighted words from the source. Do not use highlighted words outside the supplied target list.
+Mandatory answer rules:
+1. Every answer is exactly one alphabetic word: letters only, with no spaces, hyphens, apostrophes, digits, or punctuation.
+2. Every answer occurs as an exact whole word in the SOURCE TEXT, ignoring capitalization.
+3. Use every highlighted target exactly once as the answer to {highlighted_count} items. Do not alter its form.
+4. For the remaining {free_count} items, select useful non-highlighted source words. Never select another highlighted word.
+5. Never repeat an answer.
 
-Write each answer in a new context unrelated to the source, with enough information to make it clear. Avoid proper nouns and references to specific people, places, or events.
+Mandatory sentence rules:
+1. Use the answer in a new context unrelated to the source text.
+2. Give enough context for one clear answer at the source text's language level.
+3. Avoid proper nouns and references to specific people, places, or events.
+4. Make every completed sentence natural, grammatical, and meaningful.
+5. Make every sentence and cloze pattern distinct; do not reuse a sentence with another blank or lightly reword an earlier item.
+6. Use relative difficulty weights of 40 easy, 40 medium, and 30 hard. For harder non-highlighted items, grammatical or derived forms are allowed only when that exact answer form occurs in the source.
 
-Use difficulty weights of 30 easy, 40 medium, and 40 hard. For harder non-highlighted items, choose changed grammatical or derived word forms when those exact forms appear in the source.
+Mandatory field rules:
+1. before contains all sentence text before the answer and stops exactly where the answer belongs.
+2. before is non-empty and does not end with a full stop, question mark, or exclamation mark.
+3. answer contains only the missing word.
+4. after is non-empty, contains all remaining sentence text, and includes the final punctuation.
+5. Joining before + answer + after must produce exactly one complete sentence.
 
-Each item must form one grammatical sentence when joined as before + answer + after. The before field stops exactly where the answer belongs. The after field contains the remainder of the sentence, including final punctuation.
+Before returning, verify every item against every rule. Remove and replace any invalid, ambiguous, repeated, or source-incompatible item so the final array still contains exactly {count} items.
 
-The following are past questions which are standards for style and difficulty references:
+Style and difficulty references:
 
 Consuming food made with c_______ meat can lead to virus transmission.
 He was truly t_______ by the gifts his relatives brought him during his stay in the hospital.
@@ -23,7 +39,7 @@ The nutritionist gave an i_______ talk, highlighting key takeaways for better he
 They watched an interesting video showing the various stages in the p_______ of glass.
 My brother is a_______ new skills through online courses to advance his career.
 
-Example JSON fields:
+Field example:
 before: The photographer saved the images on an
 answer: external
 after: hard drive.

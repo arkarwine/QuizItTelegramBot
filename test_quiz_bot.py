@@ -80,9 +80,9 @@ class Tests(unittest.TestCase):
             parse_quiz_args(["all", "31"], 10)
 
     def test_generation_count_always_includes_spares(self) -> None:
-        self.assertEqual(3, buffered_question_count(1))
-        self.assertEqual(13, buffered_question_count(10))
-        self.assertEqual(38, buffered_question_count(30))
+        self.assertEqual(2, buffered_question_count(1))
+        self.assertEqual(15, buffered_question_count(10))
+        self.assertEqual(45, buffered_question_count(30))
 
     def test_full_test_contains_questions_and_keys(self) -> None:
         text = format_full_test(
@@ -107,9 +107,13 @@ class Tests(unittest.TestCase):
             source_text="SOURCE CONTENT",
         )
         self.assertIn("create exactly 10", prompt.lower())
-        self.assertIn("30 easy, 40 medium, and 40 hard", prompt)
+        self.assertIn("40 easy, 40 medium, and 30 hard", prompt)
         self.assertIn('HIGHLIGHTED TARGETS: ["resilient", "integrity"]', prompt)
-        self.assertIn("remaining 8 questions", prompt)
+        self.assertIn("remaining 8 items", prompt)
+        self.assertIn("letters only", prompt)
+        self.assertIn("exact whole word", prompt)
+        self.assertIn("Make every sentence and cloze pattern distinct", prompt)
+        self.assertIn("Before returning, verify every item", prompt)
         self.assertIn("SOURCE CONTENT", prompt)
 
     def test_extracts_only_bold_and_key_vocabulary_words(self) -> None:
@@ -422,7 +426,7 @@ class Tests(unittest.TestCase):
                 ]
                 invalid = [
                     {"before": "This is", "answer": "invented", "after": "."}
-                    for _ in range(3)
+                    for _ in range(5)
                 ]
                 return [*valid, *invalid]
 
@@ -438,7 +442,7 @@ class Tests(unittest.TestCase):
                 )
             finally:
                 asyncio.run(generator.aclose())
-            self.assertEqual(13, generator.generated_count)
+            self.assertEqual(15, generator.generated_count)
             self.assertEqual(10, len(questions))
 
 

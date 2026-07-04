@@ -524,8 +524,8 @@ def parse_quiz_args(args: list[str], default_count: int) -> tuple[str, int]:
 
 
 def buffered_question_count(requested: int) -> int:
-    """Add a 25% generation buffer, with at least two spare questions."""
-    return requested + max(2, (requested + 3) // 4)
+    """Generate 50% extra candidates, rounding the buffer upward."""
+    return requested + (requested + 1) // 2
 
 
 def clean_fragment(fragment: str, answer: str) -> str:
@@ -607,10 +607,12 @@ class OpenRouterGenerator:
                         "properties": {
                             "before": {
                                 "type": "string",
+                                "minLength": 1,
                                 "description": "Text ending exactly where the answer belongs; never a complete sentence.",
                             },
                             "answer": {
                                 "type": "string",
+                                "pattern": "^[A-Za-z]+$",
                                 "description": "One alphabetic word found in the source text.",
                             },
                             "after": {
@@ -622,6 +624,7 @@ class OpenRouterGenerator:
                         "required": ["before", "answer", "after"],
                         "additionalProperties": False,
                     },
+                    "uniqueItems": True,
                 }
             },
             "required": ["questions"],
@@ -639,11 +642,14 @@ class OpenRouterGenerator:
             "messages": [
                 {
                     "role": "system",
-                    "content": "Create clear ESL cloze-test sentences and follow the JSON schema.",
+                    "content": (
+                        "Create precise ESL cloze-test sentences. Follow every rule and "
+                        "return only data matching the JSON schema."
+                    ),
                 },
                 {"role": "user", "content": prompt},
             ],
-            "temperature": 0.6,
+            "temperature": 0.4,
             "max_tokens": 12000,
             "response_format": {
                 "type": "json_schema",
@@ -695,14 +701,14 @@ class OpenRouterGenerator:
                     )
                     if attempt == 0:
                         LOGGER.warning("%s Retrying for replacements.", last_error)
-                        payload["temperature"] = 0.5
+                        payload["temperature"] = 0.2
                 except BotError as error:
                     last_error = error
                     if attempt == 0:
                         LOGGER.warning(
                             "OpenRouter generation failed; retrying once: %s", error
                         )
-                        payload["temperature"] = 0.5
+                        payload["temperature"] = 0.2
         except BaseException:
             self.usage_store.reconcile(scope, highlighted_targets, set())
             raise
