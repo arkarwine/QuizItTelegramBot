@@ -1022,6 +1022,69 @@ class QuestionCacheStore:
         async with self.lock:
             await asyncio.to_thread(self._mark_answered, key, user_id, sentence_keys)
 
+    async def stats(
+        self, sources: list[Source], user_id: int
+    ) -> tuple[
+        int,
+        int,
+        dict[str, dict[str, int]],
+        dict[str, dict[str, int]],
+    ]:
+        async with self.lock:
+            return await asyncio.to_thread(self._stats, sources, user_id)
+
+    def _stats(
+        self, sources: list[Source], user_id: int
+    ) -> tuple[
+        int,
+        int,
+        dict[str, dict[str, int]],
+        dict[str, dict[str, int]],
+    ]:
+        by_source: dict[str, dict[str, int]] = {}
+        unseen_by_source: dict[str, dict[str, int]] = {}
+        total_questions = 0
+        total_answers = 0
+        for source in sources:
+            key = self.source_key(source)
+            rows = self.connection.execute(
+                """
+                SELECT difficulty, COUNT(*) FROM question_cache
+                WHERE source_key = ? GROUP BY difficulty
+                """,
+                (key,),
+            ).fetchall()
+            counts = {difficulty: 0 for difficulty in DIFFICULTIES}
+            for difficulty, amount in rows:
+                if str(difficulty) in counts:
+                    counts[str(difficulty)] = int(amount)
+            by_source[source.name] = counts
+            unseen_rows = self.connection.execute(
+                """
+                SELECT cache.difficulty, COUNT(*)
+                FROM question_cache AS cache
+                LEFT JOIN question_answers AS answered
+                  ON answered.user_id = ?
+                 AND answered.source_key = cache.source_key
+                 AND answered.sentence_key = cache.sentence_key
+                WHERE cache.source_key = ? AND answered.sentence_key IS NULL
+                GROUP BY cache.difficulty
+                """,
+                (user_id, key),
+            ).fetchall()
+            unseen_counts = {difficulty: 0 for difficulty in DIFFICULTIES}
+            for difficulty, amount in unseen_rows:
+                if str(difficulty) in unseen_counts:
+                    unseen_counts[str(difficulty)] = int(amount)
+            unseen_by_source[source.name] = unseen_counts
+            total_questions += sum(counts.values())
+            row = self.connection.execute(
+                "SELECT COUNT(*) FROM question_answers WHERE source_key = ?",
+                (key,),
+            ).fetchone()
+            total_answers += int(row[0]) if row else 0
+        return total_questions, total_answers, by_source, unseen_by_source
+
     def _mark_answered(
         self, source_key: str, user_id: int, sentence_keys: list[str]
     ) -> None:
@@ -1454,6 +1517,16 @@ class HybridCachedGenerator:
             "Cached %d full-test questions for %s.", len(questions), source.name
         )
 
+    async def cache_stats(
+        self, sources: list[Source], user_id: int
+    ) -> tuple[
+        int,
+        int,
+        dict[str, dict[str, int]],
+        dict[str, dict[str, int]],
+    ]:
+        return await self.cache_store.stats(sources, user_id)
+
     async def aclose(self) -> None:
         try:
             await self.upstream.aclose()
@@ -1831,6 +1904,40 @@ class QuizBot:
             await cache_questions(source, questions)
         except Exception as error:
             LOGGER.warning("Could not cache full test: %s", error)
+
+    async def cache_dashboard(self, user_id: int) -> str:
+        cache_stats = getattr(self.generator, "cache_stats", None)
+        if not callable(cache_stats):
+            return "🗄 Cache diagnostics: <b>unavailable</b>"
+        sources = [self.catalog.select(str(number)) for number in self.catalog.units]
+        sources.append(self.catalog.select("all"))
+        try:
+            total, answer_records, by_source, unseen = await cache_stats(
+                sources, user_id
+            )
+        except Exception as error:
+            LOGGER.warning("Could not read cache diagnostics: %s", error)
+            return "🗄 Cache diagnostics: <b>error</b>"
+
+        required = difficulty_counts(10)
+        lines = []
+        for source in sources:
+            counts = by_source[source.name]
+            available = unseen[source.name]
+            ready = all(
+                available[difficulty] >= required[difficulty]
+                for difficulty in DIFFICULTIES
+            )
+            label = source.name.replace("Unit ", "U")
+            lines.append(
+                f"{label}: {sum(counts.values())} total / "
+                f"{sum(available.values())} unseen {'✅' if ready else '⏳'}"
+            )
+        return (
+            f"🗄 Cached questions: <b>{total}</b>\n"
+            f"🧾 Answer records: <b>{answer_records}</b>\n"
+            "<blockquote>" + "\n".join(lines) + "</blockquote>"
+        )
 
     def unit_keyboard(self, flow: str) -> InlineKeyboardMarkup:
         def callback_for(unit: str) -> str:
@@ -2329,6 +2436,7 @@ class QuizBot:
             return
 
         summary = await self.stats_store.admin_summary()
+        cache_dashboard = await self.cache_dashboard(self.user_id(update))
         leaders = await self.stats_store.leaderboard(1)
         top_player = (
             f"{html.escape(leaders[0].display_name)} ({leaders[0].points} pts)"
@@ -2349,6 +2457,7 @@ class QuizBot:
             f"🏆 Top player: <b>{top_player}</b>\n\n"
             f"📨 Broadcasts sent: <b>{summary.broadcasts_sent}</b>\n"
             f"⚙️ In-progress requests: <b>{len(self.busy_users)}</b>\n"
+            f"{cache_dashboard}\n"
             f"🕒 Updated: {refreshed}"
         )
         keyboard = InlineKeyboardMarkup(

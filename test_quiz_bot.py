@@ -265,6 +265,16 @@ class Tests(unittest.TestCase):
                     2,
                     len(await generator.cache_store.unseen_candidates(source, 202, 10)),
                 )
+                (
+                    total,
+                    answer_records,
+                    by_source,
+                    unseen,
+                ) = await generator.cache_store.stats([source], 202)
+                self.assertEqual(2, total)
+                self.assertEqual(2, answer_records)
+                self.assertEqual(2, sum(by_source["Unit 1"].values()))
+                self.assertEqual(2, sum(unseen["Unit 1"].values()))
                 second_user = await generator.generate_for_user(source, 2, 202)
                 repeat_user = await generator.generate_for_user(source, 2, 101)
 
