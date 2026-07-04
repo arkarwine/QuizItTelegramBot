@@ -13,7 +13,7 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Protocol, TypeAlias, TypedDict, cast
+from typing import Any, Protocol, TypeAlias, cast
 
 import httpx
 from telegram import (
@@ -119,11 +119,6 @@ class Question:
 class Source:
     name: str
     text: str
-
-
-class UserSettings(TypedDict):
-    unit: str
-    count: int
 
 
 @dataclass(slots=True)
@@ -1084,7 +1079,6 @@ class QuizBot:
     FULL_TEST = "📄 Full Test + Keys"
     LEADERBOARD = "🏆 Leaderboard"
     STATS = "📊 My Stats"
-    SETTINGS = "⚙️ Settings"
     HELP = "ℹ️ Help"
     HINT = "💡 Hint"
     SKIP = "⏭ Skip"
@@ -1095,7 +1089,7 @@ class QuizBot:
             [QUICK],
             [CUSTOM, FULL_TEST],
             [LEADERBOARD, STATS],
-            [SETTINGS, HELP],
+            [HELP],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -1180,7 +1174,7 @@ class QuizBot:
             "🎓 <b>MYANMAR GRADE 12 MATRICULATION EXAM PREPARATION</b> 🇲🇲\n\n"
             "🧩 <b>Cloze Master</b> turns your textbook units into fresh vocabulary "
             "challenges powered by AI and focused on your matriculation exam.\n\n"
-            "⚡ <b>Quick Quiz</b> starts immediately with your saved preferences.\n"
+            "⚡ <b>Quick Quiz</b> starts 10 questions from one random unit.\n"
             "🧠 <b>Custom Quiz</b> lets you choose a unit and length.\n"
             "📄 <b>Full Test + Keys</b> creates a printable test file.\n\n"
             "🏆 <b>Leaderboard</b> shows the top learners.\n"
@@ -1201,6 +1195,8 @@ class QuizBot:
         await set_commands(application)
         for user_id, raw_data in application.user_data.items():
             data = cast(dict[str, object], raw_data)
+            if data.pop("settings", None) is not None:
+                application.mark_data_for_update_persistence(user_ids=int(user_id))
             pending = data.get("pending_generation")
             if isinstance(pending, dict):
                 application.create_task(
@@ -1388,21 +1384,12 @@ class QuizBot:
             if completed:
                 LOGGER.info("Recovered pending %s request for user %d", flow, user_id)
 
-    def settings(self, context: ContextTypes.DEFAULT_TYPE) -> UserSettings:
-        user_data = self.user_data(context)
-        stored = user_data.get("settings")
-        if isinstance(stored, dict):
-            unit = stored.get("unit")
-            count = stored.get("count")
-            if isinstance(unit, str) and isinstance(count, int):
-                return cast(UserSettings, stored)
-        settings = UserSettings(unit="all", count=self.default_count)
-        user_data["settings"] = settings
-        return settings
-
     @staticmethod
     def unit_label(unit: str) -> str:
         return "🌍 All Units" if unit == "all" else f"📘 Unit {unit}"
+
+    def random_unit(self) -> str:
+        return str(random.choice(tuple(self.catalog.units)))
 
     def unit_keyboard(self, flow: str) -> InlineKeyboardMarkup:
         def callback_for(unit: str) -> str:
@@ -1429,9 +1416,7 @@ class QuizBot:
     @staticmethod
     def count_keyboard(flow: str, unit: str) -> InlineKeyboardMarkup:
         counts = [5, 10, 15, 20, 25, 30]
-        prefix = (
-            "fullrun" if flow == "full" else "quizrun" if flow == "quiz" else "run:set"
-        )
+        prefix = "fullrun" if flow == "full" else "quizrun"
         rows = [
             [
                 InlineKeyboardButton(
@@ -1443,65 +1428,6 @@ class QuizBot:
         ]
         rows.append([InlineKeyboardButton("⬅️ Back", callback_data=f"menu:{flow}")])
         return InlineKeyboardMarkup(rows)
-
-    @staticmethod
-    def settings_keyboard() -> InlineKeyboardMarkup:
-        return InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        "📚 Default Unit", callback_data="settings:unit"
-                    ),
-                    InlineKeyboardButton(
-                        "🔢 Quiz Length", callback_data="settings:count"
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        "♻️ Reset Defaults", callback_data="settings:reset"
-                    )
-                ],
-                [InlineKeyboardButton("🏠 Main Menu", callback_data="menu:home")],
-            ]
-        )
-
-    @staticmethod
-    def settings_count_keyboard() -> InlineKeyboardMarkup:
-        counts = [5, 10, 15, 20, 25, 30]
-        rows = [
-            [
-                InlineKeyboardButton(
-                    f"{count} questions", callback_data=f"setcount:{count}"
-                )
-                for count in counts[index : index + 2]
-            ]
-            for index in range(0, len(counts), 2)
-        ]
-        rows.append([InlineKeyboardButton("⬅️ Back", callback_data="settings:back")])
-        return InlineKeyboardMarkup(rows)
-
-    async def show_settings(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE, *, edit: bool = False
-    ) -> None:
-        settings = self.settings(context)
-        text = (
-            "⚙️ <b>Your Quiz Settings</b>\n\n"
-            f"📚 Source: <b>{html.escape(self.unit_label(str(settings['unit'])))}</b>\n"
-            f"🔢 Questions: <b>{settings['count']}</b>\n\n"
-            "These preferences are used by ⚡ Quick Quiz and saved automatically."
-        )
-        query = update.callback_query
-        if edit and query:
-            await self.safe_edit(
-                query,
-                text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=self.settings_keyboard(),
-            )
-        elif update.effective_message:
-            await update.effective_message.reply_text(
-                text, parse_mode=ParseMode.HTML, reply_markup=self.settings_keyboard()
-            )
 
     async def show_help(self, update: Update) -> None:
         text = (
@@ -1983,10 +1909,7 @@ class QuizBot:
         if not message or not message.text:
             return
         if message.text == self.QUICK:
-            settings = self.settings(context)
-            await self.generate_quiz(
-                update, context, str(settings["unit"]), int(settings["count"])
-            )
+            await self.generate_quiz(update, context, self.random_unit(), 10)
         elif message.text == self.CUSTOM:
             await message.reply_text(
                 "📚 <b>Choose your source</b>\n\nWhich unit should this quiz cover?",
@@ -2003,8 +1926,6 @@ class QuizBot:
             await self.show_leaderboard(update, context)
         elif message.text == self.STATS:
             await self.show_stats(update, context)
-        elif message.text == self.SETTINGS:
-            await self.show_settings(update, context)
         elif message.text == self.HELP:
             await self.show_help(update)
 
@@ -2019,6 +1940,21 @@ class QuizBot:
         except TelegramError as error:
             LOGGER.warning("Could not acknowledge callback query: %s", error)
         data = query.data
+
+        if (
+            data.startswith("settings:")
+            or data.startswith("setcount:")
+            or data.startswith("unit:set:")
+        ):
+            await self.safe_edit(
+                query,
+                "⚡ <b>Settings have been removed.</b>\n\n"
+                "Quick Quiz now gives you 10 questions from one randomly selected unit.",
+                reply_markup=InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("🏠 Main Menu", callback_data="menu:home")]]
+                ),
+            )
+            return
 
         if data == "menu:home":
             await self.safe_edit(
@@ -2058,16 +1994,12 @@ class QuizBot:
             return
         if data.startswith("unit:"):
             _, flow, unit = data.split(":", 2)
-            if flow == "set":
-                self.settings(context)["unit"] = unit
-                await self.show_settings(update, context, edit=True)
-            else:
-                await self.safe_edit(
-                    query,
-                    f"🔢 <b>Choose quiz length</b>\n\nSource: {html.escape(self.unit_label(unit))}",
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=self.count_keyboard(flow, unit),
-                )
+            await self.safe_edit(
+                query,
+                f"🔢 <b>Choose quiz length</b>\n\nSource: {html.escape(self.unit_label(unit))}",
+                parse_mode=ParseMode.HTML,
+                reply_markup=self.count_keyboard(flow, unit),
+            )
             return
         if data.startswith("fullunit:"):
             unit = data.split(":", 1)[1]
@@ -2099,37 +2031,6 @@ class QuizBot:
                     update, context, unit, count, edit_status=True
                 )
             return
-        if data == "settings:unit":
-            await self.safe_edit(
-                query,
-                "📚 <b>Choose your default source</b>",
-                parse_mode=ParseMode.HTML,
-                reply_markup=self.unit_keyboard("set"),
-            )
-            return
-        if data == "settings:count":
-            await self.safe_edit(
-                query,
-                "🔢 <b>Choose your default quiz length</b>",
-                parse_mode=ParseMode.HTML,
-                reply_markup=self.settings_count_keyboard(),
-            )
-            return
-        if data.startswith("setcount:"):
-            count = int(data.rsplit(":", 1)[1])
-            self.settings(context)["count"] = count
-            await self.show_settings(update, context, edit=True)
-            return
-        if data == "settings:reset":
-            self.user_data(context)["settings"] = UserSettings(
-                unit="all", count=self.default_count
-            )
-            await self.show_settings(update, context, edit=True)
-            return
-        if data == "settings:back":
-            await self.show_settings(update, context, edit=True)
-            return
-
         if query:
             await self.safe_edit(
                 query,
@@ -2333,7 +2234,6 @@ class QuizBot:
             self.FULL_TEST,
             self.LEADERBOARD,
             self.STATS,
-            self.SETTINGS,
             self.HELP,
         }:
             await self.menu_text(update, context)

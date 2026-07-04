@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 from telegram import Update
 from telegram.error import BadRequest, Forbidden
@@ -202,7 +202,7 @@ class Tests(unittest.TestCase):
         self.assertIn("📄 Full Test + Keys", labels)
         self.assertIn("🏆 Leaderboard", labels)
         self.assertIn("📊 My Stats", labels)
-        self.assertIn("⚙️ Settings", labels)
+        self.assertNotIn("⚙️ Settings", labels)
 
     def test_stats_store_persists_profiles_and_orders_leaderboard(self) -> None:
         async def scenario() -> None:
@@ -287,14 +287,11 @@ class Tests(unittest.TestCase):
         bot = QuizBot(UnitCatalog({1: "one"}), StubGenerator())
         self.assertEqual(set(), bot.busy_users)
 
-    def test_settings_count_picker_uses_direct_callbacks(self) -> None:
-        callbacks = [
-            button.callback_data
-            for row in QuizBot.settings_count_keyboard().inline_keyboard
-            for button in row
-        ]
-        self.assertIn("setcount:10", callbacks)
-        self.assertIn("setcount:30", callbacks)
+    def test_quick_quiz_selects_one_random_unit(self) -> None:
+        bot = QuizBot(UnitCatalog({1: "one", 4: "four"}), StubGenerator())
+        with patch("quiz_bot.random.choice", return_value=4) as choose:
+            self.assertEqual("4", bot.random_unit())
+        choose.assert_called_once_with((1, 4))
 
     def test_application_registers_callback_query_handler(self) -> None:
         bot = QuizBot(UnitCatalog({1: "one"}), StubGenerator())
@@ -515,6 +512,22 @@ class Tests(unittest.TestCase):
 
 
 class CallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_quick_quiz_uses_ten_questions_from_one_random_unit(self) -> None:
+        bot = QuizBot(UnitCatalog({1: "one", 4: "four"}), StubGenerator())
+        message = SimpleNamespace(text=bot.QUICK)
+        update = SimpleNamespace(effective_message=message)
+        context = SimpleNamespace(user_data={})
+
+        with (
+            patch.object(bot, "random_unit", return_value="4"),
+            patch.object(bot, "generate_quiz", new_callable=AsyncMock) as generate,
+        ):
+            await bot.menu_text(
+                cast(Update, update), cast(ContextTypes.DEFAULT_TYPE, context)
+            )
+
+        generate.assert_awaited_once_with(update, context, "4", 10)
+
     async def test_pending_quiz_generation_resumes_after_restart(self) -> None:
         bot = QuizBot(UnitCatalog({4: "source"}), StubGenerator())
         user_data: dict[int, dict[str, object]] = {

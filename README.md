@@ -12,12 +12,11 @@ The Telegram application processes up to 16 updates concurrently, so one user wa
 
 Users start with a persistent native Telegram menu—no commands to learn:
 
-- ⚡ **Quick Quiz** — starts immediately with saved defaults
+- ⚡ **Quick Quiz** — 10 questions from one randomly selected unit
 - 🧠 **Custom Quiz** — inline unit and question-count selectors
 - 📄 **Full Test + Keys** — downloads a printable test file
 - 🏆 **Leaderboard** — ranks learners by correct answers and accuracy
 - 📊 **My Stats** — shows personal rank, points, accuracy, and best score
-- ⚙️ **Settings** — saves the default unit and quiz length
 - ℹ️ **Help** — visual onboarding and instructions
 
 During a quiz, Telegram keyboard controls provide hints, skipping, and early exit. Questions include progress indicators, immediate feedback, and a final score summary.
@@ -26,11 +25,8 @@ If OpenRouter returns a mixture of valid and invalid question items, the bot qui
 
 Each request asks the AI for 50% extra questions, rounded upward. Only the requested number of valid questions is delivered. If the first response still does not contain enough valid items, a second response supplements the valid questions already collected.
 
-Default settings work immediately:
-
-- Source: all units
-- Questions: 10
-- Maximum: 30
+Quick Quiz always uses one randomly selected unit and 10 questions. Custom quizzes
+and full tests can use one unit or all units, with up to 30 questions.
 
 ## Deployment setup
 
@@ -49,7 +45,7 @@ powershell -ExecutionPolicy Bypass -File .\run_bot.ps1
 
 The watchdog restarts the Python process after an unexpected non-zero exit. A clean exit remains stopped.
 
-User preferences are persisted automatically in `bot_state.pkl`. Unit Markdown files are loaded from `units/`.
+Unit Markdown files are loaded from `units/`.
 
 Active quiz sessions, in-progress quiz/full-test generation, broadcast drafts, and unfinished broadcast recipient lists are persisted. After a restart, quizzes resume at the current question, interrupted generation restarts automatically, and broadcasts continue with recipients that were still pending.
 
