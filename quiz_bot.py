@@ -1345,7 +1345,9 @@ class QuizBot:
         )
         await self.safe_edit(
             query,
-            f"📡 <b>Broadcasting…</b>\n\nDelivered: <b>0/{len(recipients)}</b>",
+            "📡 <b>Broadcasting…</b>\n\n"
+            f"Delivered: <b>0/{len(recipients)}</b>\n\n"
+            "⏱ This can take around 1 minute.",
         )
         context.application.create_task(
             self._deliver_broadcast(
@@ -1403,7 +1405,8 @@ class QuizBot:
                     "📡 <b>Broadcasting…</b>\n\n"
                     f"Processed: <b>{processed}/{len(recipients)}</b>\n"
                     f"✅ Delivered: <b>{delivered}</b>\n"
-                    f"⚠️ Failed: <b>{failed}</b>",
+                    f"⚠️ Failed: <b>{failed}</b>\n\n"
+                    "⏱ This can take around 1 minute.",
                 )
             await asyncio.sleep(0.05)
 
@@ -1733,7 +1736,10 @@ class QuizBot:
     ) -> None:
         user_id = self.user_id(update)
         if user_id in self.busy_users:
-            text = "⏳ Please wait for the current request."
+            text = (
+                "⏳ Please wait for the current request.\n\n"
+                "⏱ It can take around 1 minute."
+            )
             if update.callback_query:
                 await self.safe_edit(update.callback_query, text)
             elif update.effective_chat:
@@ -1745,7 +1751,7 @@ class QuizBot:
             "✨ <b>Building your quiz…</b>\n\n"
             f"📚 {html.escape(source.name)}\n"
             f"🔢 {count} questions\n\n"
-            "This usually takes a few seconds."
+            "⏱ This can take around 1 minute."
         )
         if edit_status and update.callback_query:
             await self.safe_edit(
@@ -1798,7 +1804,10 @@ class QuizBot:
     ) -> None:
         user_id = self.user_id(update)
         if user_id in self.busy_users:
-            text = "⏳ Your previous request is still being prepared. Please wait."
+            text = (
+                "⏳ Your previous request is still being prepared. Please wait.\n\n"
+                "⏱ It can take around 1 minute."
+            )
             if update.callback_query:
                 await self.safe_edit(update.callback_query, text)
             elif update.effective_chat:
@@ -1811,7 +1820,9 @@ class QuizBot:
         self.busy_users.add(user_id)
         status = (
             "📝 <b>Preparing your full test…</b>\n\n"
-            f"📚 {html.escape(source.name)}\n🔢 {count} questions + answer key"
+            f"📚 {html.escape(source.name)}\n"
+            f"🔢 {count} questions + answer key\n\n"
+            "⏱ This can take around 1 minute."
         )
         if edit_status and update.callback_query:
             await self.safe_edit(
