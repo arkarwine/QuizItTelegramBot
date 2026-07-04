@@ -840,22 +840,30 @@ def select_difficulty_questions(
     preferred_answers: set[str] | None = None,
     answer_priority: dict[str, int] | None = None,
 ) -> list[Question]:
-    """Select unique questions using an exact 40/30/30 difficulty allocation."""
+    """Select up to count unique questions with a preferred difficulty mix.
+
+    The function first tries to fill the 40/30/30 target from available questions.
+    If any quota cannot be satisfied, the remaining slots are filled with the best
+    remaining unique questions regardless of difficulty.
+    """
     targets = difficulty_counts(count)
     preferred = preferred_answers or set()
     selected: list[Question] = []
     seen_answers: set[str] = set()
     seen_identities: set[tuple[str, str]] = set()
+
+    def sort_key(question: Question) -> tuple[int, str]:
+        priority = (
+            answer_priority.get(question.answer.casefold(), 999)
+            if answer_priority is not None
+            else question.answer.casefold() not in preferred
+        )
+        return (priority, question.answer.casefold())
+
     for difficulty in DIFFICULTIES:
         pool = [question for question in questions if question.difficulty == difficulty]
         random.shuffle(pool)
-        pool.sort(
-            key=lambda question: (
-                answer_priority.get(question.answer.casefold(), 999)
-                if answer_priority is not None
-                else question.answer.casefold() not in preferred
-            )
-        )
+        pool.sort(key=sort_key)
         for question in pool:
             answer = question.answer.casefold()
             identity = question_identity(question)
@@ -869,6 +877,27 @@ def select_difficulty_questions(
                 >= targets[difficulty]
             ):
                 break
+            if len(selected) >= count:
+                break
+        if len(selected) >= count:
+            break
+
+    if len(selected) < count:
+        remaining = [
+            question
+            for question in questions
+            if question.answer.casefold() not in seen_answers
+            and question_identity(question) not in seen_identities
+        ]
+        random.shuffle(remaining)
+        remaining.sort(key=sort_key)
+        for question in remaining:
+            selected.append(question)
+            seen_answers.add(question.answer.casefold())
+            seen_identities.add(question_identity(question))
+            if len(selected) >= count:
+                break
+
     random.shuffle(selected)
     return selected
 
@@ -1305,17 +1334,6 @@ class OpenRouterGenerator:
                         selected = self._select_questions(
                             candidates, count, set(highlighted_targets)
                         )
-                        if len(selected) < count:
-                            last_error = BotError(
-                                "Generated questions did not satisfy the required "
-                                "difficulty distribution."
-                            )
-                            if attempt == 0:
-                                LOGGER.warning(
-                                    "%s Retrying for replacements.", last_error
-                                )
-                                payload["temperature"] = 0.2
-                                continue
                         await self._reconcile_highlighted(
                             scope, highlighted_targets, selected
                         )
@@ -1324,7 +1342,9 @@ class OpenRouterGenerator:
                         f"Only {len(candidates)} valid questions were generated."
                     )
                     if attempt == 0:
-                        LOGGER.warning("%s Retrying for replacements.", last_error)
+                        LOGGER.info(
+                            "Not enough valid questions yet; retrying once."
+                        )
                         payload["temperature"] = 0.2
                 except BotError as error:
                     last_error = error

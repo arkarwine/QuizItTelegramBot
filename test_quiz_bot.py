@@ -316,6 +316,33 @@ class Tests(unittest.TestCase):
             },
         )
 
+    def test_select_difficulty_questions_fills_when_exact_mix_is_unavailable(
+        self,
+    ) -> None:
+        candidates = [
+            Question("Easy 1 e________.", "easy1", "easy"),
+            Question("Easy 2 e________.", "easy2", "easy"),
+            Question("Easy 3 e________.", "easy3", "easy"),
+            Question("Easy 4 e________.", "easy4", "easy"),
+            Question("Medium 1 m________.", "medium1", "medium"),
+            Question("Medium 2 m________.", "medium2", "medium"),
+            Question("Medium 3 m________.", "medium3", "medium"),
+            Question("Medium 4 m________.", "medium4", "medium"),
+            Question("Medium 5 m________.", "medium5", "medium"),
+            Question("Hard 1 h________.", "hard1", "hard"),
+            Question("Hard 2 h________.", "hard2", "hard"),
+        ]
+        selected = select_difficulty_questions(candidates, 10)
+        self.assertEqual(10, len(selected))
+        self.assertEqual(
+            10,
+            len({question.answer for question in selected}),
+        )
+        self.assertTrue(
+            all(question in candidates for question in selected),
+            "Selected questions must come from provided candidates",
+        )
+
     def test_partial_cache_is_preferred_over_fresh_questions(self) -> None:
         class FreshGenerator:
             async def generate(self, source: Source, count: int) -> list[Question]:
