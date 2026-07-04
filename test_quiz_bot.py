@@ -627,6 +627,52 @@ class Tests(unittest.TestCase):
 
 
 class CallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_full_test_caches_every_generated_question(self) -> None:
+        class FullTestGenerator(StubGenerator):
+            def __init__(self) -> None:
+                self.cached: list[Question] = []
+
+            async def generate(self, source: Source, count: int) -> list[Question]:
+                del source
+                return [
+                    Question(
+                        f"Full test context {index} uses w________.",
+                        f"word{index}",
+                        "easy" if index == 0 else "medium",
+                    )
+                    for index in range(count)
+                ]
+
+            async def cache_questions(
+                self, source: Source, questions: list[Question]
+            ) -> None:
+                del source
+                self.cached.extend(questions)
+
+        generator = FullTestGenerator()
+        bot = QuizBot(UnitCatalog({1: "source"}), generator)
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=42),
+            effective_chat=SimpleNamespace(id=42),
+            effective_message=SimpleNamespace(reply_text=AsyncMock()),
+            callback_query=None,
+        )
+        context = SimpleNamespace(
+            user_data={},
+            bot=AsyncMock(),
+            application=persistence_app(),
+        )
+
+        await bot.generate_fulltest(
+            cast(Update, update),
+            cast(ContextTypes.DEFAULT_TYPE, context),
+            "1",
+            2,
+        )
+
+        self.assertEqual(2, len(generator.cached))
+        self.assertEqual(1, context.bot.send_document.await_count)
+
     async def test_only_submitted_answers_are_recorded_in_cache(self) -> None:
         class RecordingGenerator(StubGenerator):
             def __init__(self) -> None:

@@ -13,7 +13,8 @@ cache. Each learner receives unseen cached questions first. The AI is called onl
 when that learner has exhausted the available cache for the selected source.
 Generated quiz questions enter the shared cache only after the learner submits an
 answer. Unanswered, skipped, stopped, and unshown questions are not cached or
-marked as seen.
+marked as seen. Full tests are the exception: every question in a successfully
+generated full test is cached immediately because full tests are answered offline.
 
 Every delivered test preserves a 40% easy, 30% medium, and 30% hard difficulty
 mix after integer rounding. Difficulty labels are stored with cached questions,

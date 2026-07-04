@@ -1386,6 +1386,9 @@ class HybridCachedGenerator:
         await self.cache_store.store(source, [question])
         await self.cache_store.mark_answered(source, user_id, [question])
 
+    async def cache_questions(self, source: Source, questions: list[Question]) -> None:
+        await self.cache_store.store(source, questions)
+
     async def aclose(self) -> None:
         try:
             await self.upstream.aclose()
@@ -1687,6 +1690,7 @@ class QuizBot:
                     "✅ <b>Your restored quiz is ready.</b>",
                 )
             else:
+                await self.cache_full_test(source, questions)
                 content = format_full_test(source, questions).encode("utf-8")
                 await application.bot.send_document(
                     chat_id,
@@ -1752,6 +1756,15 @@ class QuizBot:
             await record_answered(session.source, user_id, question)
         except Exception as error:
             LOGGER.warning("Could not cache answered question: %s", error)
+
+    async def cache_full_test(self, source: Source, questions: list[Question]) -> None:
+        cache_questions = getattr(self.generator, "cache_questions", None)
+        if not callable(cache_questions):
+            return
+        try:
+            await cache_questions(source, questions)
+        except Exception as error:
+            LOGGER.warning("Could not cache full test: %s", error)
 
     def unit_keyboard(self, flow: str) -> InlineKeyboardMarkup:
         def callback_for(unit: str) -> str:
@@ -2650,6 +2663,7 @@ class QuizBot:
                 self.generation_tasks.pop(user_id, None)
 
         random.shuffle(questions)
+        await self.cache_full_test(source, questions)
         content = format_full_test(source, questions).encode("utf-8")
         filename = f"cloze_test_{unit}_{len(questions)}_questions.txt"
         if update.effective_chat:
