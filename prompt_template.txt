@@ -1,4 +1,5 @@
 Create exactly {count} distinct ESL cloze-test items in randomized order.
+The test takers are not English-native.
 
 HIGHLIGHTED TARGETS: {highlighted_targets}
 
@@ -17,7 +18,7 @@ Mandatory sentence rules:
 5. Make every sentence and cloze pattern distinct; do not reuse a sentence with another blank or lightly reword an earlier item.
 6. Use relative difficulty weights of 40 easy, 40 medium, and 30 hard. 
 7. For easier difficulties, use highlighted words only with no form change. For harder difficulties, use of highlighted words without grammatical or derived forms are allowed. For harder difficulties, use of useful, uncommon, or special non-highlighted words are allowed but they must not change forms.
-8. For easier difficulties, give very obvious context surrounding the answer.
+8. For easier difficulties, use simple sentences and words, and give very obvious context surrounding the answer.
 
 Mandatory field rules:
 1. before contains all sentence text before the answer and stops exactly where the answer belongs.
