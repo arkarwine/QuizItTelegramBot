@@ -838,6 +838,7 @@ def select_difficulty_questions(
     questions: list[Question],
     count: int,
     preferred_answers: set[str] | None = None,
+    answer_priority: dict[str, int] | None = None,
 ) -> list[Question]:
     """Select unique questions using an exact 40/30/30 difficulty allocation."""
     targets = difficulty_counts(count)
@@ -848,7 +849,13 @@ def select_difficulty_questions(
     for difficulty in DIFFICULTIES:
         pool = [question for question in questions if question.difficulty == difficulty]
         random.shuffle(pool)
-        pool.sort(key=lambda question: question.answer.casefold() not in preferred)
+        pool.sort(
+            key=lambda question: (
+                answer_priority.get(question.answer.casefold(), 999)
+                if answer_priority is not None
+                else question.answer.casefold() not in preferred
+            )
+        )
         for question in pool:
             answer = question.answer.casefold()
             identity = question_identity(question)
@@ -959,6 +966,60 @@ class QuestionCacheStore:
             Question(str(prompt), str(answer), str(difficulty))
             for prompt, answer, difficulty in rows
         ]
+
+    async def candidates(
+        self, source: Source, user_id: int, limit: int
+    ) -> tuple[list[Question], list[Question]]:
+        if limit < 1:
+            return [], []
+        key = self.source_key(source)
+        async with self.lock:
+            return await asyncio.to_thread(self._candidates, key, user_id, limit)
+
+    def _candidates(
+        self, source_key: str, user_id: int, limit: int
+    ) -> tuple[list[Question], list[Question]]:
+        rows = self.connection.execute(
+            """
+            SELECT cache.prompt, cache.answer, cache.difficulty,
+                   CASE WHEN answered.sentence_key IS NULL THEN 0 ELSE 1 END AS seen
+            FROM question_cache AS cache
+            LEFT JOIN question_answers AS answered
+              ON answered.user_id = ?
+             AND answered.source_key = cache.source_key
+             AND answered.sentence_key = cache.sentence_key
+            WHERE cache.source_key = ?
+            ORDER BY seen ASC, cache.use_count ASC, RANDOM()
+            LIMIT ?
+            """,
+            (user_id, source_key, limit),
+        ).fetchall()
+        unseen: list[Question] = []
+        recycled: list[Question] = []
+        for prompt, answer, difficulty, seen in rows:
+            question = Question(str(prompt), str(answer), str(difficulty))
+            (recycled if int(seen) else unseen).append(question)
+        return unseen, recycled
+
+    async def is_ready(self, source: Source, count: int) -> bool:
+        key = self.source_key(source)
+        required = difficulty_counts(count)
+        async with self.lock:
+            return await asyncio.to_thread(self._is_ready, key, required)
+
+    def _is_ready(self, source_key: str, required: dict[str, int]) -> bool:
+        rows = self.connection.execute(
+            """
+            SELECT difficulty, COUNT(*) FROM question_cache
+            WHERE source_key = ? GROUP BY difficulty
+            """,
+            (source_key,),
+        ).fetchall()
+        counts = {str(difficulty): int(amount) for difficulty, amount in rows}
+        return all(
+            counts.get(difficulty, 0) >= amount
+            for difficulty, amount in required.items()
+        )
 
     async def store(self, source: Source, questions: list[Question]) -> None:
         if not questions:
@@ -1451,13 +1512,22 @@ class HybridCachedGenerator:
         source_key = self.cache_store.source_key(source)
         lock = self.source_locks.setdefault(source_key, asyncio.Lock())
         async with lock:
-            cached = await self.cache_store.unseen_candidates(
-                source, user_id, max(count * 5, count)
+            unseen, recycled = await self.cache_store.candidates(
+                source, user_id, CACHE_LIMIT_PER_SOURCE
             )
-            cached_answers = {question.answer.casefold() for question in cached}
+            cached = [*unseen, *recycled]
+            unseen_answers = {question.answer.casefold() for question in unseen}
+            recycled_answers = {question.answer.casefold() for question in recycled}
+            cached_answers = unseen_answers | recycled_answers
+            priorities = {
+                **{answer: 0 for answer in unseen_answers},
+                **{answer: 1 for answer in recycled_answers},
+            }
             available: list[Question] = []
             self._add_unique(available, cached, CACHE_LIMIT_PER_SOURCE)
-            questions = select_difficulty_questions(available, count, cached_answers)
+            questions = select_difficulty_questions(
+                available, count, answer_priority=priorities
+            )
 
             generation_errors: list[BotError] = []
             for _ in range(2):
@@ -1472,7 +1542,7 @@ class HybridCachedGenerator:
                     break
                 self._add_unique(available, fresh, CACHE_LIMIT_PER_SOURCE)
                 questions = select_difficulty_questions(
-                    available, count, cached_answers
+                    available, count, answer_priority=priorities
                 )
 
             if not questions:
@@ -1481,20 +1551,24 @@ class HybridCachedGenerator:
                 raise BotError("No cached or generated questions are available.")
             if len(questions) < count:
                 LOGGER.warning(
-                    "Returning %d questions because only that many unseen questions "
-                    "were available for user %d.",
+                    "Returning %d questions because the cache and AI could not supply "
+                    "the requested difficulty mix for user %d.",
                     len(questions),
                     user_id,
                 )
 
             random.shuffle(questions)
             LOGGER.info(
-                "Prepared %d questions for user %d from %d cache hits and %d fresh "
-                "questions.",
+                "Prepared %d questions for user %d from %d unseen cache hits, %d "
+                "recycled cache hits, and %d fresh questions.",
                 len(questions[:count]),
                 user_id,
                 sum(
-                    question.answer.casefold() in cached_answers
+                    question.answer.casefold() in unseen_answers
+                    for question in questions[:count]
+                ),
+                sum(
+                    question.answer.casefold() in recycled_answers
                     for question in questions[:count]
                 ),
                 sum(
@@ -1503,6 +1577,9 @@ class HybridCachedGenerator:
                 ),
             )
             return questions[:count]
+
+    async def cache_ready(self, source: Source, count: int) -> bool:
+        return await self.cache_store.is_ready(source, count)
 
     async def record_answered(
         self, source: Source, user_id: int, question: Question
@@ -1905,6 +1982,16 @@ class QuizBot:
         except Exception as error:
             LOGGER.warning("Could not cache full test: %s", error)
 
+    async def cache_ready(self, source: Source, count: int) -> bool:
+        cache_ready = getattr(self.generator, "cache_ready", None)
+        if not callable(cache_ready):
+            return False
+        try:
+            return bool(await cache_ready(source, count))
+        except Exception as error:
+            LOGGER.warning("Could not check cache readiness: %s", error)
+            return False
+
     async def cache_dashboard(self, user_id: int) -> str:
         cache_stats = getattr(self.generator, "cache_stats", None)
         if not callable(cache_stats):
@@ -1925,7 +2012,7 @@ class QuizBot:
             counts = by_source[source.name]
             available = unseen[source.name]
             ready = all(
-                available[difficulty] >= required[difficulty]
+                counts[difficulty] >= required[difficulty]
                 for difficulty in DIFFICULTIES
             )
             label = source.name.replace("Unit ", "U")
@@ -2716,11 +2803,20 @@ class QuizBot:
                 "quiz", unit, count, update.effective_chat.id
             )
             await self.persist_user_data(context, user_id)
+        ready_from_cache = await self.cache_ready(source, count)
         status = (
-            "✨ <b>Building your quiz…</b>\n\n"
-            f"📚 {html.escape(source.name)}\n"
-            f"🔢 {count} questions\n\n"
-            "⏱ This can take around 1 minute."
+            (
+                "⚡ <b>Loading your quiz from cache…</b>\n\n"
+                f"📚 {html.escape(source.name)}\n"
+                f"🔢 {count} questions"
+            )
+            if ready_from_cache
+            else (
+                "✨ <b>Generating new questions…</b>\n\n"
+                f"📚 {html.escape(source.name)}\n"
+                f"🔢 {count} questions\n\n"
+                "⏱ The cache is short, so this can take around 1 minute."
+            )
         )
         if edit_status and update.callback_query:
             await self.safe_edit(
@@ -2804,11 +2900,20 @@ class QuizBot:
                 "full", unit, count, update.effective_chat.id
             )
             await self.persist_user_data(context, user_id)
+        ready_from_cache = await self.cache_ready(source, count)
         status = (
-            "📝 <b>Preparing your full test…</b>\n\n"
-            f"📚 {html.escape(source.name)}\n"
-            f"🔢 {count} questions + answer key\n\n"
-            "⏱ This can take around 1 minute."
+            (
+                "⚡ <b>Loading your full test from cache…</b>\n\n"
+                f"📚 {html.escape(source.name)}\n"
+                f"🔢 {count} questions + answer key"
+            )
+            if ready_from_cache
+            else (
+                "📝 <b>Generating your full test…</b>\n\n"
+                f"📚 {html.escape(source.name)}\n"
+                f"🔢 {count} questions + answer key\n\n"
+                "⏱ The cache is short, so this can take around 1 minute."
+            )
         )
         if edit_status and update.callback_query:
             await self.safe_edit(

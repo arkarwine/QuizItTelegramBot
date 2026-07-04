@@ -275,18 +275,18 @@ class Tests(unittest.TestCase):
                 self.assertEqual(2, answer_records)
                 self.assertEqual(2, sum(by_source["Unit 1"].values()))
                 self.assertEqual(2, sum(unseen["Unit 1"].values()))
+                self.assertTrue(await generator.cache_store.is_ready(source, 2))
                 second_user = await generator.generate_for_user(source, 2, 202)
                 repeat_user = await generator.generate_for_user(source, 2, 101)
 
-                self.assertEqual(2, upstream.calls)
+                self.assertEqual(1, upstream.calls)
                 self.assertEqual(
                     {question.prompt for question in first},
                     {question.prompt for question in second_user},
                 )
-                self.assertTrue(
-                    {question.prompt for question in first}.isdisjoint(
-                        question.prompt for question in repeat_user
-                    )
+                self.assertEqual(
+                    {question.prompt for question in first},
+                    {question.prompt for question in repeat_user},
                 )
                 await generator.aclose()
 

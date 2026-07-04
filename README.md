@@ -10,7 +10,9 @@ The Telegram application processes up to 16 updates concurrently, so one user wa
 
 To reduce OpenRouter cost and waiting time, requests use a shared SQLite question
 cache. Each learner receives unseen cached questions first. The AI is called only
-when that learner has exhausted the available cache for the selected source.
+when the shared cache for the selected source cannot fill the requested 40/30/30
+difficulty mix. After unseen questions are exhausted, previously answered cached
+questions are recycled instead of forcing another AI request.
 Generated quiz questions enter the shared cache only after the learner submits an
 answer. Unanswered, skipped, stopped, and unshown questions are not cached or
 marked as seen. Full tests are the exception: every question in a successfully
