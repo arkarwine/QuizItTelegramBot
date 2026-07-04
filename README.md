@@ -6,6 +6,8 @@ An AI-powered, button-first Telegram learning app built specifically for Grade 1
 
 Telegram and OpenRouter use fully asynchronous HTTP clients. Runtime SQLite operations and prompt-file reads are dispatched through asynchronous worker threads with per-database locks, so network, database, and file access do not block the bot event loop.
 
+The Telegram application processes up to 16 updates concurrently, so one user waiting for AI quiz generation does not freeze commands, menus, or quizzes for other users.
+
 ## User experience
 
 Users start with a persistent native Telegram menu—no commands to learn:

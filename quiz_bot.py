@@ -46,6 +46,7 @@ UNIT_FILE = re.compile(r"^unit-(\d+)-.+\.md$", re.IGNORECASE)
 SOURCE_WORD = re.compile(r"\b[A-Za-z]+\b")
 MAX_QUESTIONS = 30
 DEFAULT_QUESTIONS = 10
+MAX_CONCURRENT_UPDATES = 16
 ALLOWED_UPDATES = ["message", "callback_query"]
 PROMPT_FILE = Path(__file__).with_name("prompt_template.txt")
 TelegramApplication: TypeAlias = Application[Any, Any, Any, Any, Any, Any]
@@ -2191,6 +2192,7 @@ def build_application(
     application = (
         Application.builder()
         .token(telegram_token)
+        .concurrent_updates(MAX_CONCURRENT_UPDATES)
         .persistence(persistence)
         .post_init(set_commands)
         .post_shutdown(bot.shutdown)

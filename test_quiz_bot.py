@@ -13,6 +13,7 @@ from telegram.ext import CallbackQueryHandler, ContextTypes, TypeHandler
 
 from quiz_bot import (
     MAX_QUESTIONS,
+    MAX_CONCURRENT_UPDATES,
     ALLOWED_UPDATES,
     BotError,
     HighlightUsageStore,
@@ -302,6 +303,10 @@ class Tests(unittest.TestCase):
             any(isinstance(handler, CallbackQueryHandler) for handler in handlers)
         )
         self.assertTrue(any(isinstance(handler, TypeHandler) for handler in handlers))
+        self.assertEqual(
+            MAX_CONCURRENT_UPDATES,
+            application.update_processor.max_concurrent_updates,
+        )
 
     def test_broadcast_registry_honours_subscriptions(self) -> None:
         async def scenario() -> None:
