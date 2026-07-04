@@ -624,7 +624,6 @@ class OpenRouterGenerator:
                         "required": ["before", "answer", "after"],
                         "additionalProperties": False,
                     },
-                    "uniqueItems": True,
                 }
             },
             "required": ["questions"],

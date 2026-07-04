@@ -165,6 +165,10 @@ class Tests(unittest.TestCase):
         self.assertTrue(inspect.iscoroutinefunction(OpenRouterGenerator.generate))
         self.assertTrue(inspect.iscoroutinefunction(OpenRouterGenerator._complete))
 
+    def test_response_schema_avoids_unsupported_unique_items(self) -> None:
+        source = (BASE / "quiz_bot.py").read_text(encoding="utf-8")
+        self.assertNotIn('"uniqueItems"', source)
+
     def test_main_menu_exposes_native_button_flows(self) -> None:
         labels = [
             button.text for row in QuizBot.MAIN_KEYBOARD.keyboard for button in row
