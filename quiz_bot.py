@@ -119,6 +119,28 @@ class Question:
     answer: str
     difficulty: str = "medium"
 
+    def __getstate__(self) -> list[str]:
+        return [
+            self.prompt,
+            self.answer,
+            getattr(self, "difficulty", "medium"),
+        ]
+
+    def __setstate__(self, state: object) -> None:
+        if isinstance(state, dict):
+            prompt = state.get("prompt", "")
+            answer = state.get("answer", "")
+            difficulty = state.get("difficulty", "medium")
+        elif isinstance(state, (list, tuple)):
+            prompt = state[0] if len(state) > 0 else ""
+            answer = state[1] if len(state) > 1 else ""
+            difficulty = state[2] if len(state) > 2 else "medium"
+        else:
+            raise TypeError("Invalid persisted Question state")
+        object.__setattr__(self, "prompt", str(prompt))
+        object.__setattr__(self, "answer", str(answer))
+        object.__setattr__(self, "difficulty", str(difficulty))
+
 
 @dataclass(frozen=True, slots=True)
 class Source:
@@ -132,6 +154,28 @@ class Session:
     position: int = 0
     correct: int = 0
     source: Source | None = None
+
+    def __getstate__(self) -> dict[str, object]:
+        return {
+            "questions": self.questions,
+            "position": self.position,
+            "correct": self.correct,
+            "source": getattr(self, "source", None),
+        }
+
+    def __setstate__(self, state: object) -> None:
+        if isinstance(state, tuple) and len(state) == 2 and isinstance(state[1], dict):
+            values = state[1]
+        elif isinstance(state, dict):
+            values = state
+        else:
+            raise TypeError("Invalid persisted Session state")
+        questions = values.get("questions", [])
+        self.questions = list(questions) if isinstance(questions, list) else []
+        self.position = int(values.get("position", 0))
+        self.correct = int(values.get("correct", 0))
+        source = values.get("source")
+        self.source = source if isinstance(source, Source) else None
 
 
 class UnitCatalog:
@@ -932,7 +976,7 @@ class QuestionCacheStore:
                     source_key,
                     question.prompt,
                     question.answer,
-                    question.difficulty,
+                    getattr(question, "difficulty", "medium"),
                     template_key,
                     sentence_key,
                 )
@@ -1747,13 +1791,14 @@ class QuizBot:
     async def record_answered_question(
         self, session: Session, user_id: int, question: Question
     ) -> None:
-        if session.source is None:
+        source = getattr(session, "source", None)
+        if source is None:
             return
         record_answered = getattr(self.generator, "record_answered", None)
         if not callable(record_answered):
             return
         try:
-            await record_answered(session.source, user_id, question)
+            await record_answered(source, user_id, question)
         except Exception as error:
             LOGGER.warning("Could not cache answered question: %s", error)
 

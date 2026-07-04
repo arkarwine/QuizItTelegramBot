@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import inspect
 import unittest
 from pathlib import Path
@@ -59,6 +60,18 @@ class StubGenerator:
 
 
 class Tests(unittest.TestCase):
+    def test_legacy_persisted_objects_survive_deepcopy(self) -> None:
+        question = Question("It is v________.", "valid")
+        object.__delattr__(question, "difficulty")
+        copied_question = copy.deepcopy(question)
+        self.assertEqual("medium", copied_question.difficulty)
+
+        session = Session([question])
+        del session.source
+        copied_session = copy.deepcopy(session)
+        self.assertIsNone(copied_session.source)
+        self.assertEqual("medium", copied_session.questions[0].difficulty)
+
     def test_builds_exact_inline_cloze_format(self) -> None:
         question = build_question(
             "The photographer saved the images on an", "external", "hard drive."
