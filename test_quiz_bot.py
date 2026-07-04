@@ -306,6 +306,39 @@ class Tests(unittest.TestCase):
             },
         )
 
+    def test_partial_cache_is_preferred_over_fresh_questions(self) -> None:
+        class FreshGenerator:
+            async def generate(self, source: Source, count: int) -> list[Question]:
+                del source, count
+                return [
+                    Question("A fresh context needs f________.", "fresh", "easy"),
+                    Question(
+                        "A moderate context needs m________.", "moderate", "medium"
+                    ),
+                ]
+
+            async def aclose(self) -> None:
+                return None
+
+        async def scenario() -> None:
+            with TemporaryDirectory() as directory:
+                store = QuestionCacheStore(Path(directory) / "questions.sqlite3")
+                generator = HybridCachedGenerator(FreshGenerator(), store)
+                source = Source("Unit 1", "cached fresh moderate")
+                cached = Question("A cached context needs c________.", "cached", "easy")
+                await store.store(source, [cached])
+
+                selected = await generator.generate_for_user(source, 2, 202)
+
+                self.assertIn(cached, selected)
+                self.assertEqual(
+                    {"easy", "medium"},
+                    {question.difficulty for question in selected},
+                )
+                await generator.aclose()
+
+        asyncio.run(scenario())
+
     def test_response_schema_avoids_unsupported_unique_items(self) -> None:
         source = (BASE / "quiz_bot.py").read_text(encoding="utf-8")
         self.assertNotIn('"uniqueItems"', source)

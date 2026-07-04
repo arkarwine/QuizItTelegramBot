@@ -1391,9 +1391,10 @@ class HybridCachedGenerator:
             cached = await self.cache_store.unseen_candidates(
                 source, user_id, max(count * 5, count)
             )
+            cached_answers = {question.answer.casefold() for question in cached}
             available: list[Question] = []
             self._add_unique(available, cached, CACHE_LIMIT_PER_SOURCE)
-            questions = select_difficulty_questions(available, count)
+            questions = select_difficulty_questions(available, count, cached_answers)
 
             generation_errors: list[BotError] = []
             for _ in range(2):
@@ -1407,7 +1408,9 @@ class HybridCachedGenerator:
                     generation_errors.append(error)
                     break
                 self._add_unique(available, fresh, CACHE_LIMIT_PER_SOURCE)
-                questions = select_difficulty_questions(available, count)
+                questions = select_difficulty_questions(
+                    available, count, cached_answers
+                )
 
             if not questions:
                 if generation_errors:
@@ -1422,6 +1425,20 @@ class HybridCachedGenerator:
                 )
 
             random.shuffle(questions)
+            LOGGER.info(
+                "Prepared %d questions for user %d from %d cache hits and %d fresh "
+                "questions.",
+                len(questions[:count]),
+                user_id,
+                sum(
+                    question.answer.casefold() in cached_answers
+                    for question in questions[:count]
+                ),
+                sum(
+                    question.answer.casefold() not in cached_answers
+                    for question in questions[:count]
+                ),
+            )
             return questions[:count]
 
     async def record_answered(
@@ -1429,9 +1446,13 @@ class HybridCachedGenerator:
     ) -> None:
         await self.cache_store.store(source, [question])
         await self.cache_store.mark_answered(source, user_id, [question])
+        LOGGER.info("Cached answered question for user %d in %s.", user_id, source.name)
 
     async def cache_questions(self, source: Source, questions: list[Question]) -> None:
         await self.cache_store.store(source, questions)
+        LOGGER.info(
+            "Cached %d full-test questions for %s.", len(questions), source.name
+        )
 
     async def aclose(self) -> None:
         try:
