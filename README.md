@@ -4,7 +4,7 @@
 
 An AI-powered, button-first Telegram learning app built specifically for Grade 12 matriculation exam practice, using `python-telegram-bot` and OpenRouter's `google/gemini-2.5-flash` model.
 
-Telegram and OpenRouter use fully asynchronous HTTP clients, so network requests do not block the bot event loop.
+Telegram and OpenRouter use fully asynchronous HTTP clients. Runtime SQLite operations and prompt-file reads are dispatched through asynchronous worker threads with per-database locks, so network, database, and file access do not block the bot event loop.
 
 ## User experience
 

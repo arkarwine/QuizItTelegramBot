@@ -132,27 +132,37 @@ class Tests(unittest.TestCase):
         )
 
     def test_highlighted_usage_rotates_least_used_words_per_scope(self) -> None:
-        words = {"alpha", "bravo", "charlie", "delta"}
-        with TemporaryDirectory() as directory:
-            path = Path(directory) / "highlighted.sqlite3"
-            store = HighlightUsageStore(path)
-            first = store.reserve("unit 1", words, 2)
-            second = store.reserve("unit 1", words, 2)
-            self.assertEqual(set(), set(first) & set(second))
-            self.assertEqual({1}, set(store.counts("unit 1", words).values()))
-            self.assertEqual({0}, set(store.counts("unit 2", words).values()))
-            store.close()
+        async def scenario() -> None:
+            words = {"alpha", "bravo", "charlie", "delta"}
+            with TemporaryDirectory() as directory:
+                path = Path(directory) / "highlighted.sqlite3"
+                store = HighlightUsageStore(path)
+                first = await store.reserve("unit 1", words, 2)
+                second = await store.reserve("unit 1", words, 2)
+                self.assertEqual(set(), set(first) & set(second))
+                self.assertEqual(
+                    {1}, set((await store.counts("unit 1", words)).values())
+                )
+                self.assertEqual(
+                    {0}, set((await store.counts("unit 2", words)).values())
+                )
+                await store.close()
+
+        asyncio.run(scenario())
 
     def test_unused_highlighted_reservation_is_rolled_back(self) -> None:
-        words = {"alpha", "bravo"}
-        with TemporaryDirectory() as directory:
-            store = HighlightUsageStore(Path(directory) / "highlighted.sqlite3")
-            reserved = store.reserve("unit 1", words, 2)
-            store.reconcile("unit 1", reserved, {reserved[0]})
-            counts = store.counts("unit 1", words)
-            self.assertEqual(1, counts[reserved[0]])
-            self.assertEqual(0, counts[reserved[1]])
-            store.close()
+        async def scenario() -> None:
+            words = {"alpha", "bravo"}
+            with TemporaryDirectory() as directory:
+                store = HighlightUsageStore(Path(directory) / "highlighted.sqlite3")
+                reserved = await store.reserve("unit 1", words, 2)
+                await store.reconcile("unit 1", reserved, {reserved[0]})
+                counts = await store.counts("unit 1", words)
+                self.assertEqual(1, counts[reserved[0]])
+                self.assertEqual(0, counts[reserved[1]])
+                await store.close()
+
+        asyncio.run(scenario())
 
     def test_normalize(self) -> None:
         self.assertEqual("external", normalize(" EXTERNAL! "))
@@ -164,6 +174,11 @@ class Tests(unittest.TestCase):
     def test_openrouter_network_path_is_async(self) -> None:
         self.assertTrue(inspect.iscoroutinefunction(OpenRouterGenerator.generate))
         self.assertTrue(inspect.iscoroutinefunction(OpenRouterGenerator._complete))
+        self.assertTrue(inspect.iscoroutinefunction(HighlightUsageStore.reserve))
+        self.assertTrue(inspect.iscoroutinefunction(HighlightUsageStore.reconcile))
+        self.assertTrue(inspect.iscoroutinefunction(StatsStore.record_quiz))
+        self.assertTrue(inspect.iscoroutinefunction(StatsStore.leaderboard))
+        self.assertTrue(inspect.iscoroutinefunction(StatsStore.broadcast_recipients))
 
     def test_response_schema_avoids_unsupported_unique_items(self) -> None:
         source = (BASE / "quiz_bot.py").read_text(encoding="utf-8")
@@ -181,38 +196,44 @@ class Tests(unittest.TestCase):
         self.assertIn("⚙️ Settings", labels)
 
     def test_stats_store_persists_profiles_and_orders_leaderboard(self) -> None:
-        with TemporaryDirectory() as directory:
-            path = Path(directory) / "stats.sqlite3"
-            store = StatsStore(path)
-            store.record_quiz(1, "Accurate", 8, 8, 100)
-            store.record_quiz(2, "Steady", 10, 8, 80)
-            store.record_quiz(3, "Leader", 12, 9, 75)
-            store.record_quiz(1, "Accurate", 10, 5, 50)
+        async def scenario() -> None:
+            with TemporaryDirectory() as directory:
+                path = Path(directory) / "stats.sqlite3"
+                store = StatsStore(path)
+                await store.record_quiz(1, "Accurate", 8, 8, 100)
+                await store.record_quiz(2, "Steady", 10, 8, 80)
+                await store.record_quiz(3, "Leader", 12, 9, 75)
+                await store.record_quiz(1, "Accurate", 10, 5, 50)
 
-            leaders = store.leaderboard()
-            self.assertEqual([1, 3, 2], [player.user_id for player in leaders])
-            profile = store.profile(1)
-            self.assertIsNotNone(profile)
-            assert profile is not None
-            self.assertEqual(2, profile.quizzes_completed)
-            self.assertEqual(13, profile.correct_answers)
-            self.assertEqual(100, profile.best_score)
-            self.assertEqual(130, profile.points)
-            self.assertEqual(1, store.rank(1))
-            summary = store.admin_summary()
-            self.assertEqual(3, summary.known_users)
-            self.assertEqual(3, summary.subscribed_users)
-            self.assertEqual(3, summary.total_players)
-            self.assertEqual(4, summary.quizzes_completed)
-            self.assertEqual(40, summary.questions_answered)
-            self.assertEqual(30, summary.correct_answers)
-            self.assertEqual(75, summary.accuracy)
-            self.assertEqual(0, summary.broadcasts_sent)
-            store.close()
+                leaders = await store.leaderboard()
+                self.assertEqual([1, 3, 2], [player.user_id for player in leaders])
+                profile = await store.profile(1)
+                self.assertIsNotNone(profile)
+                assert profile is not None
+                self.assertEqual(2, profile.quizzes_completed)
+                self.assertEqual(13, profile.correct_answers)
+                self.assertEqual(100, profile.best_score)
+                self.assertEqual(130, profile.points)
+                self.assertEqual(1, await store.rank(1))
+                summary = await store.admin_summary()
+                self.assertEqual(3, summary.known_users)
+                self.assertEqual(3, summary.subscribed_users)
+                self.assertEqual(3, summary.total_players)
+                self.assertEqual(4, summary.quizzes_completed)
+                self.assertEqual(40, summary.questions_answered)
+                self.assertEqual(30, summary.correct_answers)
+                self.assertEqual(75, summary.accuracy)
+                self.assertEqual(0, summary.broadcasts_sent)
+                await store.close()
 
-            reopened = StatsStore(path)
-            self.assertEqual(13, reopened.profile(1).correct_answers)  # type: ignore[union-attr]
-            reopened.close()
+                reopened = StatsStore(path)
+                reopened_profile = await reopened.profile(1)
+                self.assertIsNotNone(reopened_profile)
+                assert reopened_profile is not None
+                self.assertEqual(13, reopened_profile.correct_answers)
+                await reopened.close()
+
+        asyncio.run(scenario())
 
     def test_admin_user_ids_accept_commas_and_spaces(self) -> None:
         self.assertEqual({123, 456, 789}, parse_admin_user_ids("123, 456 789"))
@@ -283,18 +304,21 @@ class Tests(unittest.TestCase):
         self.assertTrue(any(isinstance(handler, TypeHandler) for handler in handlers))
 
     def test_broadcast_registry_honours_subscriptions(self) -> None:
-        with TemporaryDirectory() as directory:
-            store = StatsStore(Path(directory) / "stats.sqlite3")
-            store.register_user(1, "One", "one")
-            store.register_user(2, "Two", None)
-            self.assertEqual([1, 2], store.broadcast_recipients())
-            store.set_subscription(2, False)
-            self.assertEqual([1], store.broadcast_recipients())
-            store.register_user(2, "Two Updated", "two")
-            self.assertEqual([1], store.broadcast_recipients())
-            store.set_subscription(2, True)
-            self.assertEqual([1, 2], store.broadcast_recipients())
-            store.close()
+        async def scenario() -> None:
+            with TemporaryDirectory() as directory:
+                store = StatsStore(Path(directory) / "stats.sqlite3")
+                await store.register_user(1, "One", "one")
+                await store.register_user(2, "Two", None)
+                self.assertEqual([1, 2], await store.broadcast_recipients())
+                await store.set_subscription(2, False)
+                self.assertEqual([1], await store.broadcast_recipients())
+                await store.register_user(2, "Two Updated", "two")
+                self.assertEqual([1], await store.broadcast_recipients())
+                await store.set_subscription(2, True)
+                self.assertEqual([1, 2], await store.broadcast_recipients())
+                await store.close()
+
+        asyncio.run(scenario())
 
     def test_duplicate_generated_answers_are_skipped(self) -> None:
         items = [
@@ -500,19 +524,19 @@ class CallbackTests(unittest.IsolatedAsyncioTestCase):
                 "Ada Learner",
             )
 
-            profile = store.profile(42)
+            profile = await store.profile(42)
             self.assertIsNotNone(profile)
             assert profile is not None
             self.assertEqual(1, profile.quizzes_completed)
             self.assertEqual(2, profile.questions_answered)
             self.assertEqual(1, profile.correct_answers)
             self.assertEqual(50, profile.best_score)
-            store.close()
+            await store.close()
 
     async def test_personal_stats_and_leaderboard_render_native_controls(self) -> None:
         with TemporaryDirectory() as directory:
             store = StatsStore(Path(directory) / "stats.sqlite3")
-            store.record_quiz(42, "Ada & Bob", 10, 8, 80)
+            await store.record_quiz(42, "Ada & Bob", 10, 8, 80)
             bot = QuizBot(
                 UnitCatalog({1: "source"}),
                 StubGenerator(),
@@ -541,7 +565,7 @@ class CallbackTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Ada &amp; Bob", leaderboard_text)
             for call in message.reply_text.await_args_list:
                 self.assertIsNotNone(call.kwargs["reply_markup"])
-            store.close()
+            await store.close()
 
     async def test_admin_dashboard_rejects_users_not_in_allowlist(self) -> None:
         bot = QuizBot(UnitCatalog({1: "source"}), StubGenerator(), admin_user_ids={42})
@@ -563,7 +587,7 @@ class CallbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_admin_dashboard_shows_global_summary_to_admin(self) -> None:
         with TemporaryDirectory() as directory:
             store = StatsStore(Path(directory) / "stats.sqlite3")
-            store.record_quiz(42, "Admin", 10, 9, 90)
+            await store.record_quiz(42, "Admin", 10, 9, 90)
             bot = QuizBot(
                 UnitCatalog({1: "source"}),
                 StubGenerator(),
@@ -587,7 +611,7 @@ class CallbackTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Known users: <b>1</b>", text)
             self.assertIn("Ranked players: <b>1</b>", text)
             self.assertIn("Global accuracy: <b>90%</b>", text)
-            store.close()
+            await store.close()
 
     async def test_admin_can_preview_a_rich_broadcast_message(self) -> None:
         bot = QuizBot(UnitCatalog({1: "source"}), StubGenerator(), admin_user_ids={42})
@@ -626,8 +650,8 @@ class CallbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_broadcast_tracks_success_and_deactivates_blocked_users(self) -> None:
         with TemporaryDirectory() as directory:
             store = StatsStore(Path(directory) / "stats.sqlite3")
-            store.register_user(1, "Reachable", None)
-            store.register_user(2, "Blocked", None)
+            await store.register_user(1, "Reachable", None)
+            await store.register_user(2, "Blocked", None)
             bot = QuizBot(
                 UnitCatalog({1: "source"}),
                 StubGenerator(),
@@ -667,14 +691,14 @@ class CallbackTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(1, len(background_tasks))
             await background_tasks[0]
 
-            self.assertEqual([1], store.broadcast_recipients())
-            summary = store.admin_summary()
+            self.assertEqual([1], await store.broadcast_recipients())
+            summary = await store.admin_summary()
             self.assertEqual(1, summary.broadcasts_sent)
             final_text = query.edit_message_text.await_args_list[-1].args[0]
             self.assertIn("Delivered: <b>1</b>", final_text)
             self.assertIn("Failed: <b>1</b>", final_text)
             self.assertNotIn("broadcast_draft", context.user_data)
-            store.close()
+            await store.close()
 
     async def test_same_question_position_is_sent_only_once(self) -> None:
         bot = QuizBot(UnitCatalog({1: "source"}), StubGenerator())

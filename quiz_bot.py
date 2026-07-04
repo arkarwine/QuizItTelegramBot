@@ -192,7 +192,8 @@ class HighlightUsageStore:
     """Persist counters only for highlighted vocabulary words."""
 
     def __init__(self, path: Path) -> None:
-        self.connection = sqlite3.connect(path)
+        self.connection = sqlite3.connect(path, check_same_thread=False)
+        self.lock = asyncio.Lock()
         self.connection.execute(
             """
             CREATE TABLE IF NOT EXISTS highlighted_usage (
@@ -205,7 +206,11 @@ class HighlightUsageStore:
         )
         self.connection.commit()
 
-    def reserve(self, scope: str, candidates: set[str], count: int) -> list[str]:
+    async def reserve(self, scope: str, candidates: set[str], count: int) -> list[str]:
+        async with self.lock:
+            return await asyncio.to_thread(self._reserve, scope, candidates, count)
+
+    def _reserve(self, scope: str, candidates: set[str], count: int) -> list[str]:
         words = sorted(candidates)
         if not words or count < 1:
             return []
@@ -232,7 +237,11 @@ class HighlightUsageStore:
             )
         return selected
 
-    def reconcile(self, scope: str, reserved: list[str], used: set[str]) -> None:
+    async def reconcile(self, scope: str, reserved: list[str], used: set[str]) -> None:
+        async with self.lock:
+            await asyncio.to_thread(self._reconcile, scope, reserved, used)
+
+    def _reconcile(self, scope: str, reserved: list[str], used: set[str]) -> None:
         unused = [word for word in reserved if word not in used]
         if not unused:
             return
@@ -249,7 +258,11 @@ class HighlightUsageStore:
                 ((scope, word) for word in unused),
             )
 
-    def counts(self, scope: str, candidates: set[str]) -> dict[str, int]:
+    async def counts(self, scope: str, candidates: set[str]) -> dict[str, int]:
+        async with self.lock:
+            return await asyncio.to_thread(self._counts, scope, candidates)
+
+    def _counts(self, scope: str, candidates: set[str]) -> dict[str, int]:
         rows = self.connection.execute(
             "SELECT word, use_count FROM highlighted_usage WHERE scope = ?",
             (scope,),
@@ -257,8 +270,9 @@ class HighlightUsageStore:
         counts = {str(word): int(use_count) for word, use_count in rows}
         return {word: counts.get(word, 0) for word in candidates}
 
-    def close(self) -> None:
-        self.connection.close()
+    async def close(self) -> None:
+        async with self.lock:
+            await asyncio.to_thread(self.connection.close)
 
 
 @dataclass(frozen=True, slots=True)
@@ -303,7 +317,8 @@ class StatsStore:
     """Persist aggregate quiz results for dashboards and leaderboards."""
 
     def __init__(self, path: Path | str) -> None:
-        self.connection = sqlite3.connect(path)
+        self.connection = sqlite3.connect(path, check_same_thread=False)
+        self.lock = asyncio.Lock()
         self.connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS player_stats (
@@ -338,7 +353,15 @@ class StatsStore:
         )
         self.connection.commit()
 
-    def register_user(
+    async def register_user(
+        self, user_id: int, display_name: str, username: str | None
+    ) -> None:
+        async with self.lock:
+            await asyncio.to_thread(
+                self._register_user, user_id, display_name, username
+            )
+
+    def _register_user(
         self, user_id: int, display_name: str, username: str | None
     ) -> None:
         if user_id <= 0:
@@ -358,20 +381,34 @@ class StatsStore:
                 (user_id, safe_name, safe_username),
             )
 
-    def set_subscription(self, user_id: int, subscribed: bool) -> None:
+    async def set_subscription(self, user_id: int, subscribed: bool) -> None:
+        async with self.lock:
+            await asyncio.to_thread(self._set_subscription, user_id, subscribed)
+
+    def _set_subscription(self, user_id: int, subscribed: bool) -> None:
         with self.connection:
             self.connection.execute(
                 "UPDATE bot_users SET is_subscribed = ? WHERE user_id = ?",
                 (1 if subscribed else 0, user_id),
             )
 
-    def broadcast_recipients(self) -> list[int]:
+    async def broadcast_recipients(self) -> list[int]:
+        async with self.lock:
+            return await asyncio.to_thread(self._broadcast_recipients)
+
+    def _broadcast_recipients(self) -> list[int]:
         rows = self.connection.execute(
             "SELECT user_id FROM bot_users WHERE is_subscribed = 1 ORDER BY user_id"
         ).fetchall()
         return [int(row[0]) for row in rows]
 
-    def create_broadcast(self, admin_id: int, total_recipients: int) -> int:
+    async def create_broadcast(self, admin_id: int, total_recipients: int) -> int:
+        async with self.lock:
+            return await asyncio.to_thread(
+                self._create_broadcast, admin_id, total_recipients
+            )
+
+    def _create_broadcast(self, admin_id: int, total_recipients: int) -> int:
         with self.connection:
             cursor = self.connection.execute(
                 """
@@ -384,7 +421,15 @@ class StatsStore:
             raise RuntimeError("Could not create broadcast record.")
         return int(cursor.lastrowid)
 
-    def finish_broadcast(self, broadcast_id: int, delivered: int, failed: int) -> None:
+    async def finish_broadcast(
+        self, broadcast_id: int, delivered: int, failed: int
+    ) -> None:
+        async with self.lock:
+            await asyncio.to_thread(
+                self._finish_broadcast, broadcast_id, delivered, failed
+            )
+
+    def _finish_broadcast(self, broadcast_id: int, delivered: int, failed: int) -> None:
         with self.connection:
             self.connection.execute(
                 """
@@ -395,7 +440,25 @@ class StatsStore:
                 (delivered, failed, broadcast_id),
             )
 
-    def record_quiz(
+    async def record_quiz(
+        self,
+        user_id: int,
+        display_name: str,
+        answered: int,
+        correct: int,
+        score: int,
+    ) -> None:
+        async with self.lock:
+            await asyncio.to_thread(
+                self._record_quiz,
+                user_id,
+                display_name,
+                answered,
+                correct,
+                score,
+            )
+
+    def _record_quiz(
         self,
         user_id: int,
         display_name: str,
@@ -405,7 +468,7 @@ class StatsStore:
     ) -> None:
         if user_id <= 0:
             return
-        self.register_user(user_id, display_name, None)
+        self._register_user(user_id, display_name, None)
         safe_name = display_name.strip()[:80] or "Player"
         with self.connection:
             self.connection.execute(
@@ -436,7 +499,11 @@ class StatsStore:
             best_score=int(row[5]),
         )
 
-    def profile(self, user_id: int) -> PlayerStats | None:
+    async def profile(self, user_id: int) -> PlayerStats | None:
+        async with self.lock:
+            return await asyncio.to_thread(self._profile, user_id)
+
+    def _profile(self, user_id: int) -> PlayerStats | None:
         row = self.connection.execute(
             """
             SELECT user_id, display_name, quizzes_completed,
@@ -447,7 +514,11 @@ class StatsStore:
         ).fetchone()
         return self._from_row(cast(tuple[Any, ...], row)) if row else None
 
-    def leaderboard(self, limit: int = 10) -> list[PlayerStats]:
+    async def leaderboard(self, limit: int = 10) -> list[PlayerStats]:
+        async with self.lock:
+            return await asyncio.to_thread(self._leaderboard, limit)
+
+    def _leaderboard(self, limit: int = 10) -> list[PlayerStats]:
         rows = self.connection.execute(
             """
             SELECT user_id, display_name, quizzes_completed,
@@ -465,14 +536,22 @@ class StatsStore:
         ).fetchall()
         return [self._from_row(cast(tuple[Any, ...], row)) for row in rows]
 
-    def rank(self, user_id: int) -> int | None:
-        rows = self.leaderboard(1_000_000)
+    async def rank(self, user_id: int) -> int | None:
+        async with self.lock:
+            return await asyncio.to_thread(self._rank, user_id)
+
+    def _rank(self, user_id: int) -> int | None:
+        rows = self._leaderboard(1_000_000)
         for index, player in enumerate(rows, start=1):
             if player.user_id == user_id:
                 return index
         return None
 
-    def admin_summary(self) -> AdminStats:
+    async def admin_summary(self) -> AdminStats:
+        async with self.lock:
+            return await asyncio.to_thread(self._admin_summary)
+
+    def _admin_summary(self) -> AdminStats:
         player_row = self.connection.execute(
             """
             SELECT COUNT(*),
@@ -504,8 +583,9 @@ class StatsStore:
             broadcasts_sent=int(broadcast_row[0]),
         )
 
-    def close(self) -> None:
-        self.connection.close()
+    async def close(self) -> None:
+        async with self.lock:
+            await asyncio.to_thread(self.connection.close)
 
 
 def parse_quiz_args(args: list[str], default_count: int) -> tuple[str, int]:
@@ -584,14 +664,14 @@ class OpenRouterGenerator:
         self.client = httpx.AsyncClient(timeout=httpx.Timeout(90.0))
 
     async def generate(self, source: Source, count: int) -> list[Question]:
-        template = PROMPT_FILE.read_text(encoding="utf-8")
+        template = await asyncio.to_thread(PROMPT_FILE.read_text, encoding="utf-8")
         generation_count = buffered_question_count(count)
         highlighted_words = extract_highlighted_words(source.text)
         highlighted_count = min(
             len(highlighted_words), max(1, round(generation_count * 0.7))
         )
         scope = source.name.casefold()
-        highlighted_targets = self.usage_store.reserve(
+        highlighted_targets = await self.usage_store.reserve(
             scope, highlighted_words, highlighted_count
         )
         free_count = generation_count - len(highlighted_targets)
@@ -691,7 +771,7 @@ class OpenRouterGenerator:
                         selected = self._select_questions(
                             candidates, count, set(highlighted_targets)
                         )
-                        self._reconcile_highlighted(
+                        await self._reconcile_highlighted(
                             scope, highlighted_targets, selected
                         )
                         return selected
@@ -709,19 +789,19 @@ class OpenRouterGenerator:
                         )
                         payload["temperature"] = 0.2
         except BaseException:
-            self.usage_store.reconcile(scope, highlighted_targets, set())
+            await self.usage_store.reconcile(scope, highlighted_targets, set())
             raise
         if candidates:
             selected = self._select_questions(
                 candidates, count, set(highlighted_targets)
             )
-            self._reconcile_highlighted(scope, highlighted_targets, selected)
+            await self._reconcile_highlighted(scope, highlighted_targets, selected)
             LOGGER.warning(
                 "Returning %d valid questions after both generation attempts.",
                 len(selected),
             )
             return selected
-        self.usage_store.reconcile(scope, highlighted_targets, set())
+        await self.usage_store.reconcile(scope, highlighted_targets, set())
         raise last_error or BotError("OpenRouter generation failed.")
 
     @staticmethod
@@ -749,7 +829,7 @@ class OpenRouterGenerator:
         random.shuffle(selected)
         return selected[:count]
 
-    def _reconcile_highlighted(
+    async def _reconcile_highlighted(
         self, scope: str, reserved: list[str], questions: list[Question]
     ) -> None:
         used = {
@@ -757,7 +837,7 @@ class OpenRouterGenerator:
             for question in questions
             if question.answer.casefold() in reserved
         }
-        self.usage_store.reconcile(scope, reserved, used)
+        await self.usage_store.reconcile(scope, reserved, used)
 
     async def _complete(self, payload: dict[str, Any]) -> object:
         headers = {
@@ -795,7 +875,7 @@ class OpenRouterGenerator:
         try:
             await self.client.aclose()
         finally:
-            self.usage_store.close()
+            await self.usage_store.close()
 
     @staticmethod
     def _parse_questions(
@@ -981,7 +1061,7 @@ class QuizBot:
         try:
             await self.generator.aclose()
         finally:
-            self.stats_store.close()
+            await self.stats_store.close()
 
     def settings(self, context: ContextTypes.DEFAULT_TYPE) -> UserSettings:
         user_data = self.user_data(context)
@@ -1142,7 +1222,7 @@ class QuizBot:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         user_id = self.user_id(update)
-        stats = self.stats_store.profile(user_id)
+        stats = await self.stats_store.profile(user_id)
         refreshed = datetime.now().astimezone().strftime("%H:%M:%S")
         if stats is None:
             text = (
@@ -1152,7 +1232,7 @@ class QuizBot:
                 f"🕒 Updated: {refreshed}"
             )
         else:
-            rank = self.stats_store.rank(user_id)
+            rank = await self.stats_store.rank(user_id)
             rank_text = f"#{rank}" if rank is not None else "—"
             text = (
                 "📊 <b>My Stats</b>\n\n"
@@ -1187,7 +1267,7 @@ class QuizBot:
         del context
         user = update.effective_user
         if user:
-            self.stats_store.register_user(user.id, user.full_name, user.username)
+            await self.stats_store.register_user(user.id, user.full_name, user.username)
 
     async def subscribe(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -1196,8 +1276,8 @@ class QuizBot:
         user = update.effective_user
         if not user or not update.effective_message:
             return
-        self.stats_store.register_user(user.id, user.full_name, user.username)
-        self.stats_store.set_subscription(user.id, True)
+        await self.stats_store.register_user(user.id, user.full_name, user.username)
+        await self.stats_store.set_subscription(user.id, True)
         await update.effective_message.reply_text(
             "🔔 <b>Broadcasts enabled.</b> You will receive future announcements.",
             parse_mode=ParseMode.HTML,
@@ -1211,8 +1291,8 @@ class QuizBot:
         user = update.effective_user
         if not user or not update.effective_message:
             return
-        self.stats_store.register_user(user.id, user.full_name, user.username)
-        self.stats_store.set_subscription(user.id, False)
+        await self.stats_store.register_user(user.id, user.full_name, user.username)
+        await self.stats_store.set_subscription(user.id, False)
         await update.effective_message.reply_text(
             "🔕 <b>Broadcasts disabled.</b> Use /subscribe whenever you want to rejoin.",
             parse_mode=ParseMode.HTML,
@@ -1285,7 +1365,7 @@ class QuizBot:
             from_chat_id=message.chat_id,
             message_id=message.message_id,
         )
-        recipients = len(self.stats_store.broadcast_recipients())
+        recipients = len(await self.stats_store.broadcast_recipients())
         keyboard = InlineKeyboardMarkup(
             [
                 [
@@ -1343,8 +1423,8 @@ class QuizBot:
 
         user_data.pop("broadcast_state", None)
         user_data.pop("broadcast_draft", None)
-        recipients = self.stats_store.broadcast_recipients()
-        broadcast_id = self.stats_store.create_broadcast(
+        recipients = await self.stats_store.broadcast_recipients()
+        broadcast_id = await self.stats_store.create_broadcast(
             self.user_id(update), len(recipients)
         )
         await self.safe_edit(
@@ -1396,7 +1476,7 @@ class QuizBot:
                 delivered += 1
             except (Forbidden, BadRequest):
                 failed += 1
-                self.stats_store.set_subscription(recipient_id, False)
+                await self.stats_store.set_subscription(recipient_id, False)
             except TelegramError as error:
                 failed += 1
                 LOGGER.warning(
@@ -1414,7 +1494,7 @@ class QuizBot:
                 )
             await asyncio.sleep(0.05)
 
-        self.stats_store.finish_broadcast(broadcast_id, delivered, failed)
+        await self.stats_store.finish_broadcast(broadcast_id, delivered, failed)
         keyboard = InlineKeyboardMarkup(
             [
                 [
@@ -1456,8 +1536,8 @@ class QuizBot:
                 )
             return
 
-        summary = self.stats_store.admin_summary()
-        leaders = self.stats_store.leaderboard(1)
+        summary = await self.stats_store.admin_summary()
+        leaders = await self.stats_store.leaderboard(1)
         top_player = (
             f"{html.escape(leaders[0].display_name)} ({leaders[0].points} pts)"
             if leaders
@@ -1510,7 +1590,7 @@ class QuizBot:
     async def show_leaderboard(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        leaders = self.stats_store.leaderboard(10)
+        leaders = await self.stats_store.leaderboard(10)
         refreshed = datetime.now().astimezone().strftime("%H:%M:%S")
         if not leaders:
             body = "No ranked players yet. Complete a quiz to claim first place!"
@@ -1525,7 +1605,7 @@ class QuizBot:
                 )
             body = "\n".join(lines)
 
-        own_rank = self.stats_store.rank(self.user_id(update))
+        own_rank = await self.stats_store.rank(self.user_id(update))
         own_rank_text = f"#{own_rank}" if own_rank is not None else "Unranked"
         text = (
             "🏆 <b>Global Leaderboard</b>\n\n"
@@ -2008,7 +2088,7 @@ class QuizBot:
         total = len(session.questions)
         answered = session.position
         percentage = round(session.correct * 100 / total)
-        self.stats_store.record_quiz(
+        await self.stats_store.record_quiz(
             player_id,
             player_name,
             answered,
