@@ -10,3 +10,6 @@ highlighted_usage.sqlite3-wal
 quiz_stats.sqlite3
 quiz_stats.sqlite3-shm
 quiz_stats.sqlite3-wal
+question_cache.sqlite3
+question_cache.sqlite3-shm
+question_cache.sqlite3-wal

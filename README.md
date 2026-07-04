@@ -8,6 +8,11 @@ Telegram and OpenRouter use fully asynchronous HTTP clients. Runtime SQLite oper
 
 The Telegram application processes up to 16 updates concurrently, so one user waiting for AI quiz generation does not freeze commands, menus, or quizzes for other users.
 
+To reduce OpenRouter cost and waiting time, requests use a shared SQLite question
+cache. Each learner receives unseen cached questions first. The AI is called only
+when that learner has exhausted the available cache for the selected source, and
+the valid new questions are cached for subsequent learners.
+
 ## User experience
 
 Users start with a persistent native Telegram menu—no commands to learn:
@@ -50,6 +55,12 @@ Unit Markdown files are loaded from `units/`.
 Active quiz sessions, in-progress quiz/full-test generation, broadcast drafts, and unfinished broadcast recipient lists are persisted. After a restart, quizzes resume at the current question, interrupted generation restarts automatically, and broadcasts continue with recipients that were still pending.
 
 The app rotates through the least-used bold and KEY VOCABULARY words for each source selection, while the AI continues to choose non-highlighted words freely. Only highlighted-word counters are stored in `highlighted_usage.sqlite3`; questions and user answers are not stored.
+
+Reusable question text, answer keys, and per-user delivery history are stored in
+`question_cache.sqlite3`. The cache is keyed by a hash of the selected source and
+is automatically limited to 500 questions per source version. Delivery history
+contains Telegram user IDs only so the bot does not repeat cached questions for a
+learner.
 
 Interactive quiz results are aggregated in `quiz_stats.sqlite3` for the leaderboard, personal stats, and admin dashboard. The database stores Telegram user IDs, display names, and score totals; individual answers and question text are not stored.
 

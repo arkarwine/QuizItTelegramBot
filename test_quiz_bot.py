@@ -17,9 +17,11 @@ from quiz_bot import (
     ALLOWED_UPDATES,
     BotError,
     HighlightUsageStore,
+    HybridCachedGenerator,
     OpenRouterGenerator,
     QuizBot,
     Question,
+    QuestionCacheStore,
     Session,
     Source,
     StatsStore,
@@ -188,6 +190,53 @@ class Tests(unittest.TestCase):
         self.assertTrue(inspect.iscoroutinefunction(StatsStore.record_quiz))
         self.assertTrue(inspect.iscoroutinefunction(StatsStore.leaderboard))
         self.assertTrue(inspect.iscoroutinefunction(StatsStore.broadcast_recipients))
+
+    def test_cache_serves_new_users_and_refills_after_exhaustion(self) -> None:
+        class CountingGenerator:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def generate(self, source: Source, count: int) -> list[Question]:
+                del source
+                self.calls += 1
+                start = (self.calls - 1) * 10
+                answers = ["alpha", "bravo", "charlie", "delta"]
+                return [
+                    Question(
+                        f"Context {start + index} uses {answer[0]}________.",
+                        answer,
+                    )
+                    for index, answer in enumerate(answers[start % 4 :], start=1)
+                ][:count]
+
+            async def aclose(self) -> None:
+                return None
+
+        async def scenario() -> None:
+            with TemporaryDirectory() as directory:
+                upstream = CountingGenerator()
+                generator = HybridCachedGenerator(
+                    upstream,
+                    QuestionCacheStore(Path(directory) / "questions.sqlite3"),
+                )
+                source = Source("Unit 1", "alpha bravo charlie delta")
+                first = await generator.generate_for_user(source, 2, 101)
+                second_user = await generator.generate_for_user(source, 2, 202)
+                repeat_user = await generator.generate_for_user(source, 2, 101)
+
+                self.assertEqual(2, upstream.calls)
+                self.assertEqual(
+                    {question.prompt for question in first},
+                    {question.prompt for question in second_user},
+                )
+                self.assertTrue(
+                    {question.prompt for question in first}.isdisjoint(
+                        question.prompt for question in repeat_user
+                    )
+                )
+                await generator.aclose()
+
+        asyncio.run(scenario())
 
     def test_response_schema_avoids_unsupported_unique_items(self) -> None:
         source = (BASE / "quiz_bot.py").read_text(encoding="utf-8")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import html
 import json
 import logging
@@ -46,6 +47,7 @@ UNIT_FILE = re.compile(r"^unit-(\d+)-.+\.md$", re.IGNORECASE)
 SOURCE_WORD = re.compile(r"\b[A-Za-z]+\b")
 MAX_QUESTIONS = 30
 DEFAULT_QUESTIONS = 10
+CACHE_LIMIT_PER_SOURCE = 500
 MAX_CONCURRENT_UPDATES = 16
 ALLOWED_UPDATES = ["message", "callback_query"]
 PROMPT_FILE = Path(__file__).with_name("prompt_template.txt")
@@ -762,6 +764,172 @@ def question_identity(question: Question) -> tuple[str, str]:
     return canonical(template), canonical(completed)
 
 
+class QuestionCacheStore:
+    """Persist reusable questions and track which ones each user has received."""
+
+    def __init__(self, path: Path | str) -> None:
+        self.connection = sqlite3.connect(path, check_same_thread=False)
+        self.lock = asyncio.Lock()
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS question_cache (
+                source_key TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                answer TEXT NOT NULL,
+                template_key TEXT NOT NULL,
+                sentence_key TEXT NOT NULL,
+                use_count INTEGER NOT NULL DEFAULT 0 CHECK (use_count >= 0),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_used TEXT,
+                PRIMARY KEY (source_key, sentence_key)
+            )
+            """
+        )
+        self.connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS question_cache_rotation
+            ON question_cache(source_key, use_count, created_at)
+            """
+        )
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS question_deliveries (
+                user_id INTEGER NOT NULL,
+                source_key TEXT NOT NULL,
+                sentence_key TEXT NOT NULL,
+                delivered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, source_key, sentence_key)
+            )
+            """
+        )
+        self.connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS question_deliveries_lookup
+            ON question_deliveries(user_id, source_key)
+            """
+        )
+        self.connection.commit()
+
+    @staticmethod
+    def source_key(source: Source) -> str:
+        material = f"{source.name}\0{source.text}".encode("utf-8")
+        return hashlib.sha256(material).hexdigest()
+
+    async def unseen_candidates(
+        self, source: Source, user_id: int, limit: int
+    ) -> list[Question]:
+        if limit < 1:
+            return []
+        key = self.source_key(source)
+        async with self.lock:
+            return await asyncio.to_thread(self._unseen_candidates, key, user_id, limit)
+
+    def _unseen_candidates(
+        self, source_key: str, user_id: int, limit: int
+    ) -> list[Question]:
+        rows = self.connection.execute(
+            """
+            SELECT cache.prompt, cache.answer
+            FROM question_cache AS cache
+            LEFT JOIN question_deliveries AS delivery
+              ON delivery.user_id = ?
+             AND delivery.source_key = cache.source_key
+             AND delivery.sentence_key = cache.sentence_key
+            WHERE cache.source_key = ? AND delivery.sentence_key IS NULL
+            ORDER BY cache.use_count ASC, RANDOM()
+            LIMIT ?
+            """,
+            (user_id, source_key, limit),
+        ).fetchall()
+        return [Question(str(prompt), str(answer)) for prompt, answer in rows]
+
+    async def store(self, source: Source, questions: list[Question]) -> None:
+        if not questions:
+            return
+        key = self.source_key(source)
+        async with self.lock:
+            await asyncio.to_thread(self._store, key, questions)
+
+    def _store(self, source_key: str, questions: list[Question]) -> None:
+        rows = []
+        for question in questions:
+            template_key, sentence_key = question_identity(question)
+            rows.append(
+                (
+                    source_key,
+                    question.prompt,
+                    question.answer,
+                    template_key,
+                    sentence_key,
+                )
+            )
+        with self.connection:
+            self.connection.executemany(
+                """
+                INSERT OR IGNORE INTO question_cache (
+                    source_key, prompt, answer, template_key, sentence_key
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+            self.connection.execute(
+                """
+                DELETE FROM question_cache
+                WHERE source_key = ? AND sentence_key NOT IN (
+                    SELECT sentence_key FROM question_cache
+                    WHERE source_key = ?
+                    ORDER BY use_count ASC, created_at DESC
+                    LIMIT ?
+                )
+                """,
+                (source_key, source_key, CACHE_LIMIT_PER_SOURCE),
+            )
+            self.connection.execute(
+                """
+                DELETE FROM question_deliveries
+                WHERE source_key = ? AND sentence_key NOT IN (
+                    SELECT sentence_key FROM question_cache WHERE source_key = ?
+                )
+                """,
+                (source_key, source_key),
+            )
+
+    async def mark_delivered(
+        self, source: Source, user_id: int, questions: list[Question]
+    ) -> None:
+        if not questions:
+            return
+        key = self.source_key(source)
+        sentence_keys = [question_identity(question)[1] for question in questions]
+        async with self.lock:
+            await asyncio.to_thread(self._mark_delivered, key, user_id, sentence_keys)
+
+    def _mark_delivered(
+        self, source_key: str, user_id: int, sentence_keys: list[str]
+    ) -> None:
+        with self.connection:
+            self.connection.executemany(
+                """
+                INSERT OR IGNORE INTO question_deliveries (
+                    user_id, source_key, sentence_key
+                ) VALUES (?, ?, ?)
+                """,
+                ((user_id, source_key, sentence_key) for sentence_key in sentence_keys),
+            )
+            self.connection.executemany(
+                """
+                UPDATE question_cache
+                SET use_count = use_count + 1, last_used = CURRENT_TIMESTAMP
+                WHERE source_key = ? AND sentence_key = ?
+                """,
+                ((source_key, sentence_key) for sentence_key in sentence_keys),
+            )
+
+    async def close(self) -> None:
+        async with self.lock:
+            await asyncio.to_thread(self.connection.close)
+
+
 class OpenRouterGenerator:
     URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -1061,6 +1229,83 @@ class OpenRouterGenerator:
         return questions
 
 
+class HybridCachedGenerator:
+    """Serve unseen cached questions before asking the upstream AI for more."""
+
+    def __init__(
+        self, upstream: QuestionGenerator, cache_store: QuestionCacheStore
+    ) -> None:
+        self.upstream = upstream
+        self.cache_store = cache_store
+        self.source_locks: dict[str, asyncio.Lock] = {}
+
+    @staticmethod
+    def _add_unique(
+        destination: list[Question], candidates: list[Question], limit: int
+    ) -> None:
+        seen_answers = {question.answer.casefold() for question in destination}
+        identities = {question_identity(question) for question in destination}
+        for question in candidates:
+            identity = question_identity(question)
+            if question.answer.casefold() in seen_answers or identity in identities:
+                continue
+            destination.append(question)
+            seen_answers.add(question.answer.casefold())
+            identities.add(identity)
+            if len(destination) >= limit:
+                return
+
+    async def generate(self, source: Source, count: int) -> list[Question]:
+        return await self.generate_for_user(source, count, 0)
+
+    async def generate_for_user(
+        self, source: Source, count: int, user_id: int
+    ) -> list[Question]:
+        source_key = self.cache_store.source_key(source)
+        lock = self.source_locks.setdefault(source_key, asyncio.Lock())
+        async with lock:
+            cached = await self.cache_store.unseen_candidates(
+                source, user_id, max(count * 5, count)
+            )
+            questions: list[Question] = []
+            self._add_unique(questions, cached, count)
+
+            generation_errors: list[BotError] = []
+            for _ in range(2):
+                missing = count - len(questions)
+                if missing <= 0:
+                    break
+                try:
+                    fresh = await self.upstream.generate(source, missing)
+                except BotError as error:
+                    generation_errors.append(error)
+                    break
+                await self.cache_store.store(source, fresh)
+                self._add_unique(questions, fresh, count)
+
+            if not questions:
+                if generation_errors:
+                    raise generation_errors[-1]
+                raise BotError("No cached or generated questions are available.")
+            if len(questions) < count:
+                LOGGER.warning(
+                    "Returning %d questions because only that many unseen questions "
+                    "were available for user %d.",
+                    len(questions),
+                    user_id,
+                )
+
+            await self.cache_store.mark_delivered(source, user_id, questions)
+            random.shuffle(questions)
+            return questions[:count]
+
+    async def aclose(self) -> None:
+        try:
+            await self.upstream.aclose()
+        finally:
+            await self.cache_store.close()
+
+
 def format_full_test(source: Source, questions: list[Question]) -> str:
     lines = [source.name, ""]
     lines.extend(
@@ -1334,7 +1579,7 @@ class QuizBot:
                 parse_mode=ParseMode.HTML,
             )
             source = self.catalog.select(unit)
-            questions = await self.generator.generate(source, count)
+            questions = await self.questions_for_user(source, count, user_id)
             random.shuffle(questions)
             if flow == "quiz":
                 session = Session(questions)
@@ -1390,6 +1635,15 @@ class QuizBot:
 
     def random_unit(self) -> str:
         return str(random.choice(tuple(self.catalog.units)))
+
+    async def questions_for_user(
+        self, source: Source, count: int, user_id: int
+    ) -> list[Question]:
+        generate_for_user = getattr(self.generator, "generate_for_user", None)
+        if callable(generate_for_user):
+            questions = await generate_for_user(source, count, user_id)
+            return cast(list[Question], questions)
+        return await self.generator.generate(source, count)
 
     def unit_keyboard(self, flow: str) -> InlineKeyboardMarkup:
         def callback_for(unit: str) -> str:
@@ -2100,7 +2354,7 @@ class QuizBot:
         elif update.effective_message:
             await update.effective_message.reply_text(status, parse_mode=ParseMode.HTML)
         try:
-            questions = await self.generator.generate(source, count)
+            questions = await self.questions_for_user(source, count, user_id)
         except Exception as error:
             LOGGER.error("Quiz generation failed: %s", error)
             user_data.pop("pending_generation", None)
@@ -2183,7 +2437,7 @@ class QuizBot:
         elif update.effective_message:
             await update.effective_message.reply_text(status, parse_mode=ParseMode.HTML)
         try:
-            questions = await self.generator.generate(source, count)
+            questions = await self.questions_for_user(source, count, user_id)
         except Exception as error:
             LOGGER.error("Full test generation failed: %s", error)
             user_data.pop("pending_generation", None)
@@ -2532,9 +2786,16 @@ def main() -> None:
         admin_user_ids = parse_admin_user_ids(os.environ.get("ADMIN_USER_IDS", ""))
     except ValueError as error:
         raise SystemExit(str(error)) from error
+    question_cache = QuestionCacheStore(
+        Path(os.environ.get("QUESTION_CACHE_DB", base / "question_cache.sqlite3"))
+    )
+    generator = HybridCachedGenerator(
+        OpenRouterGenerator(openrouter_key, model, usage_store, site_url),
+        question_cache,
+    )
     bot = QuizBot(
         catalog,
-        OpenRouterGenerator(openrouter_key, model, usage_store, site_url),
+        generator,
         default_count,
         stats_store,
         admin_user_ids,
