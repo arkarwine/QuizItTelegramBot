@@ -964,7 +964,8 @@ class QuizBot:
         await message.reply_text(
             f"👋 <b>Welcome, {first_name}!</b>\n\n"
             "🧩 <b>Cloze Master</b> turns your textbook units into fresh vocabulary "
-            "challenges powered by AI.\n\n"
+            "challenges powered by AI. It is designed for students preparing for "
+            "Myanmar’s <b>Grade 12 Matriculation Examination</b>.\n\n"
             "⚡ <b>Quick Quiz</b> starts immediately with your saved preferences.\n"
             "🧠 <b>Custom Quiz</b> lets you choose a unit and length.\n"
             "📄 <b>Full Test + Keys</b> creates a printable test file.\n\n"
@@ -1100,6 +1101,8 @@ class QuizBot:
     async def show_help(self, update: Update) -> None:
         text = (
             "ℹ️ <b>How to Play</b>\n\n"
+            "🎓 Practise vocabulary for Myanmar’s <b>Grade 12 Matriculation "
+            "Examination</b> using your textbook units.\n\n"
             "1️⃣ Choose <b>Quick Quiz</b> or build a <b>Custom Quiz</b>.\n"
             "2️⃣ Read the sentence and type the complete missing word.\n"
             "3️⃣ Use 💡 <b>Hint</b> if you are stuck, or ⏭ <b>Skip</b>.\n"
@@ -2071,12 +2074,13 @@ async def set_commands(application: TelegramApplication) -> None:
         ]
     )
     await application.bot.set_my_short_description(
-        "AI-powered cloze quizzes from your textbook units 🧩 Made by @arkarwine"
+        "AI cloze practice for Myanmar’s Grade 12 Matriculation Examination 🧩 Made by @arkarwine"
     )
     await application.bot.set_my_description(
-        "Master vocabulary with fresh AI-generated cloze quizzes. Choose a unit, set "
-        "your quiz length, get instant feedback, and download complete tests with keys. "
-        "Made by @arkarwine."
+        "Prepare for Myanmar’s Grade 12 Matriculation Examination with fresh "
+        "AI-generated cloze quizzes based on your textbook units. Choose a unit, set "
+        "your quiz length, receive instant feedback, and download complete practice "
+        "tests with answer keys. Made by @arkarwine."
     )
 
 
