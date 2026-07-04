@@ -12,7 +12,7 @@ Mandatory answer rules:
 Mandatory sentence rules:
 1. Use the answer in a new context unrelated to the source text.
 2. Give enough context for one clear answer at the source text's language level.
-3. Avoid proper nouns, pronouns, auxiliray verbs, prepositions, conjunctions, interjections and references to specific people, places, or events.
+3. For answers, avoid proper nouns, pronouns, auxiliray verbs, prepositions, conjunctions, interjections and references to specific people, places, or events.
 4. Make every completed sentence natural, grammatical, and meaningful.
 5. Make every sentence and cloze pattern distinct; do not reuse a sentence with another blank or lightly reword an earlier item.
 6. Use relative difficulty weights of 40 easy, 40 medium, and 30 hard. 
