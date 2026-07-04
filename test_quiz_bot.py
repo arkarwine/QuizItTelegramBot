@@ -29,11 +29,13 @@ from quiz_bot import (
     buffered_question_count,
     build_question,
     build_application,
+    difficulty_counts,
     extract_highlighted_words,
     format_full_test,
     normalize,
     parse_admin_user_ids,
     parse_quiz_args,
+    select_difficulty_questions,
 )
 
 
@@ -115,10 +117,13 @@ class Tests(unittest.TestCase):
             highlighted_targets='["resilient", "integrity"]',
             highlighted_count=2,
             free_count=8,
+            easy_count=4,
+            medium_count=3,
+            hard_count=3,
             source_text="SOURCE CONTENT",
         )
         self.assertIn("create exactly 10", prompt.lower())
-        self.assertIn("40 easy, 40 medium, and 30 hard", prompt)
+        self.assertIn("4 easy, 3 medium, and 3 hard", prompt)
         self.assertIn('HIGHLIGHTED TARGETS: ["resilient", "integrity"]', prompt)
         self.assertIn("remaining 8 items", prompt)
         self.assertIn("letters only", prompt)
@@ -199,15 +204,31 @@ class Tests(unittest.TestCase):
             async def generate(self, source: Source, count: int) -> list[Question]:
                 del source
                 self.calls += 1
-                start = (self.calls - 1) * 10
-                answers = ["alpha", "bravo", "charlie", "delta"]
-                return [
-                    Question(
-                        f"Context {start + index} uses {answer[0]}________.",
-                        answer,
-                    )
-                    for index, answer in enumerate(answers[start % 4 :], start=1)
-                ][:count]
+                words = [
+                    "alpha",
+                    "bravo",
+                    "charlie",
+                    "delta",
+                    "echo",
+                    "foxtrot",
+                    "golf",
+                    "hotel",
+                ]
+                start = (self.calls - 1) * count
+                questions: list[Question] = []
+                index = start
+                for difficulty, amount in difficulty_counts(count).items():
+                    for _ in range(amount):
+                        answer = words[index]
+                        questions.append(
+                            Question(
+                                f"Context {index} uses {answer[0]}________.",
+                                answer,
+                                difficulty,
+                            )
+                        )
+                        index += 1
+                return questions
 
             async def aclose(self) -> None:
                 return None
@@ -221,6 +242,16 @@ class Tests(unittest.TestCase):
                 )
                 source = Source("Unit 1", "alpha bravo charlie delta")
                 first = await generator.generate_for_user(source, 2, 101)
+                self.assertEqual(
+                    [],
+                    await generator.cache_store.unseen_candidates(source, 202, 10),
+                )
+                for question in first:
+                    await generator.record_answered(source, 101, question)
+                self.assertEqual(
+                    2,
+                    len(await generator.cache_store.unseen_candidates(source, 202, 10)),
+                )
                 second_user = await generator.generate_for_user(source, 2, 202)
                 repeat_user = await generator.generate_for_user(source, 2, 101)
 
@@ -238,6 +269,30 @@ class Tests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_difficulty_allocation_is_forty_thirty_thirty(self) -> None:
+        self.assertEqual({"easy": 4, "medium": 3, "hard": 3}, difficulty_counts(10))
+        self.assertEqual(30, sum(difficulty_counts(30).values()))
+        candidates = [
+            Question(
+                f"Context {index} uses w________.",
+                f"word{index}",
+                difficulty,
+            )
+            for index, difficulty in enumerate(
+                ["easy"] * 8 + ["medium"] * 8 + ["hard"] * 8
+            )
+        ]
+        selected = select_difficulty_questions(candidates, 10)
+        self.assertEqual(
+            {"easy": 4, "medium": 3, "hard": 3},
+            {
+                difficulty: sum(
+                    question.difficulty == difficulty for question in selected
+                )
+                for difficulty in ("easy", "medium", "hard")
+            },
+        )
+
     def test_response_schema_avoids_unsupported_unique_items(self) -> None:
         source = (BASE / "quiz_bot.py").read_text(encoding="utf-8")
         self.assertNotIn('"uniqueItems"', source)
@@ -251,6 +306,7 @@ class Tests(unittest.TestCase):
         self.assertIn("📄 Full Test + Keys", labels)
         self.assertIn("🏆 Leaderboard", labels)
         self.assertIn("📊 My Stats", labels)
+        self.assertIn("🛑 Stop", labels)
         self.assertNotIn("⚙️ Settings", labels)
 
     def test_stats_store_persists_profiles_and_orders_leaderboard(self) -> None:
@@ -493,7 +549,14 @@ class Tests(unittest.TestCase):
                 self.calls += 1
                 if self.calls == 1:
                     raise BotError("malformed JSON")
-                return [{"before": "It is", "answer": "valid", "after": "."}]
+                return [
+                    {
+                        "before": "It is",
+                        "answer": "valid",
+                        "after": ".",
+                        "difficulty": "easy",
+                    }
+                ]
 
         with TemporaryDirectory() as directory:
             generator = FlakyGenerator(
@@ -535,6 +598,9 @@ class Tests(unittest.TestCase):
                         "before": f"Situation number {index} requires",
                         "answer": answer,
                         "after": ".",
+                        "difficulty": (
+                            "easy" if index <= 4 else "medium" if index <= 7 else "hard"
+                        ),
                     }
                     for index, answer in enumerate(answers, start=1)
                 ]
@@ -561,6 +627,111 @@ class Tests(unittest.TestCase):
 
 
 class CallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_only_submitted_answers_are_recorded_in_cache(self) -> None:
+        class RecordingGenerator(StubGenerator):
+            def __init__(self) -> None:
+                self.recorded: list[Question] = []
+
+            async def record_answered(
+                self, source: Source, user_id: int, question: Question
+            ) -> None:
+                del source, user_id
+                self.recorded.append(question)
+
+        generator = RecordingGenerator()
+        bot = QuizBot(UnitCatalog({1: "alpha bravo"}), generator)
+        source = Source("Unit 1", "alpha bravo")
+        questions = [
+            Question("It is a________.", "alpha", "easy"),
+            Question("It is b________.", "bravo", "medium"),
+        ]
+        context = SimpleNamespace(
+            user_data={"session": Session(questions, source=source)},
+            bot=AsyncMock(),
+            application=persistence_app(),
+        )
+        answer_message = SimpleNamespace(
+            text="alpha", chat_id=42, reply_text=AsyncMock()
+        )
+        answer_update = SimpleNamespace(
+            effective_message=answer_message,
+            effective_user=SimpleNamespace(id=42, full_name="Learner"),
+        )
+
+        await bot.answer(
+            cast(Update, answer_update), cast(ContextTypes.DEFAULT_TYPE, context)
+        )
+        self.assertEqual([questions[0]], generator.recorded)
+
+        skip_message = SimpleNamespace(
+            text=bot.SKIP, chat_id=42, reply_text=AsyncMock()
+        )
+        skip_update = SimpleNamespace(
+            effective_message=skip_message,
+            effective_user=SimpleNamespace(id=42, full_name="Learner"),
+        )
+        await bot.answer(
+            cast(Update, skip_update), cast(ContextTypes.DEFAULT_TYPE, context)
+        )
+        self.assertEqual([questions[0]], generator.recorded)
+
+    async def test_stop_cancels_in_flight_generation_and_releases_user(self) -> None:
+        class WaitingGenerator:
+            def __init__(self) -> None:
+                self.started = asyncio.Event()
+
+            async def generate(self, source: Source, count: int) -> list[Question]:
+                del source, count
+                self.started.set()
+                await asyncio.Event().wait()
+                return []
+
+            async def aclose(self) -> None:
+                return None
+
+        generator = WaitingGenerator()
+        bot = QuizBot(UnitCatalog({1: "source"}), generator)
+        generation_message = SimpleNamespace(reply_text=AsyncMock())
+        generation_update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=42),
+            effective_chat=SimpleNamespace(id=42),
+            effective_message=generation_message,
+            callback_query=None,
+        )
+        application = persistence_app()
+        context = SimpleNamespace(
+            user_data={},
+            bot=AsyncMock(),
+            application=application,
+        )
+        task = asyncio.create_task(
+            bot.generate_quiz(
+                cast(Update, generation_update),
+                cast(ContextTypes.DEFAULT_TYPE, context),
+                "1",
+                10,
+            )
+        )
+        await generator.started.wait()
+
+        stop_message = SimpleNamespace(text="stop", reply_text=AsyncMock())
+        stop_update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=42),
+            effective_chat=SimpleNamespace(id=42),
+            effective_message=stop_message,
+            callback_query=None,
+        )
+        await bot.handle_message(
+            cast(Update, stop_update), cast(ContextTypes.DEFAULT_TYPE, context)
+        )
+
+        self.assertTrue(task.cancelled())
+        self.assertNotIn(42, bot.busy_users)
+        self.assertNotIn(42, bot.generation_tasks)
+        self.assertNotIn("pending_generation", context.user_data)
+        self.assertEqual(1, stop_message.reply_text.await_count)
+        self.assertIn("Stopped", stop_message.reply_text.await_args.args[0])
+
     async def test_quick_quiz_uses_ten_questions_from_one_random_unit(self) -> None:
         bot = QuizBot(UnitCatalog({1: "one", 4: "four"}), StubGenerator())
         message = SimpleNamespace(text=bot.QUICK)

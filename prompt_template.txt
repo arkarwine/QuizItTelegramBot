@@ -16,7 +16,7 @@ Mandatory sentence rules:
 3. In each question, avoid proper nouns, pronouns, auxiliray verbs, prepositions, conjunctions, interjections and references to specific people, places, or events as answers. 
 4. Make every completed sentence natural, grammatical, and meaningful.
 5. Make every sentence and cloze pattern distinct; do not reuse a sentence with another blank or lightly reword an earlier item.
-6. Use relative difficulty weights of 40 easy, 40 medium, and 30 hard. 
+6. Label and produce exactly {easy_count} easy, {medium_count} medium, and {hard_count} hard items (40% easy, 30% medium, 30% hard after integer rounding).
 7. For easier difficulties, use highlighted words only with no form change. For harder difficulties, use of highlighted words without grammatical or derived forms are allowed. For harder difficulties, use of useful, uncommon, or special non-highlighted words are allowed but they must not change forms.
 8. For easier difficulties, use simple sentences and words, and give very obvious context surrounding the answer.
 
@@ -26,6 +26,7 @@ Mandatory field rules:
 3. answer contains only the missing word.
 4. after is non-empty, contains all remaining sentence text, and includes the final punctuation.
 5. Joining before + answer + after must produce exactly one complete sentence.
+6. difficulty is exactly one of: easy, medium, hard.
 
 Before returning, verify every item against every rule. Remove and replace any invalid, ambiguous, repeated, or source-incompatible item so the final array still contains exactly {count} items.
 
@@ -46,6 +47,7 @@ Field example:
 before: The photographer saved the images on an
 answer: external
 after: hard drive.
+difficulty: easy
 
 SOURCE TEXT:
 {source_text}

@@ -48,6 +48,8 @@ SOURCE_WORD = re.compile(r"\b[A-Za-z]+\b")
 MAX_QUESTIONS = 30
 DEFAULT_QUESTIONS = 10
 CACHE_LIMIT_PER_SOURCE = 500
+CACHE_SCHEMA_VERSION = "answered-only-v2"
+DIFFICULTIES = ("easy", "medium", "hard")
 MAX_CONCURRENT_UPDATES = 16
 ALLOWED_UPDATES = ["message", "callback_query"]
 PROMPT_FILE = Path(__file__).with_name("prompt_template.txt")
@@ -115,6 +117,7 @@ class QuestionGenerator(Protocol):
 class Question:
     prompt: str
     answer: str
+    difficulty: str = "medium"
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +131,7 @@ class Session:
     questions: list[Question]
     position: int = 0
     correct: int = 0
+    source: Source | None = None
 
 
 class UnitCatalog:
@@ -725,6 +729,26 @@ def buffered_question_count(requested: int) -> int:
     return requested + (requested + 1) // 2
 
 
+def difficulty_counts(count: int) -> dict[str, int]:
+    """Allocate an exact 40% easy, 30% medium, 30% hard integer mix."""
+    weights = {"easy": 4, "medium": 3, "hard": 3}
+    result = {
+        difficulty: count * weight // 10 for difficulty, weight in weights.items()
+    }
+    remaining = count - sum(result.values())
+    priority = {"easy": 0, "medium": 1, "hard": 2}
+    ranked = sorted(
+        DIFFICULTIES,
+        key=lambda difficulty: (
+            -(count * weights[difficulty] % 10),
+            priority[difficulty],
+        ),
+    )
+    for difficulty in ranked[:remaining]:
+        result[difficulty] += 1
+    return result
+
+
 def clean_fragment(fragment: str, answer: str) -> str:
     fragment = re.sub(
         r"(?i)\[(?:blank|answer|missing word)\]|"
@@ -740,7 +764,9 @@ def clean_fragment(fragment: str, answer: str) -> str:
     return re.sub(r"\s+([.,;:?!])", r"\1", fragment)
 
 
-def build_question(before: str, answer: str, after: str) -> Question:
+def build_question(
+    before: str, answer: str, after: str, difficulty: str = "medium"
+) -> Question:
     before = clean_fragment(before, answer)
     after = clean_fragment(after, answer)
     initial = answer[0].lower()
@@ -749,7 +775,7 @@ def build_question(before: str, answer: str, after: str) -> Question:
     ).rstrip()
     left = before + (" " if before else "")
     right = ("" if not after or after[0] in ".,;:?!" else " ") + after
-    return Question(left + initial + "________" + right, answer)
+    return Question(left + initial + "________" + right, answer, difficulty)
 
 
 def question_identity(question: Question) -> tuple[str, str]:
@@ -764,8 +790,40 @@ def question_identity(question: Question) -> tuple[str, str]:
     return canonical(template), canonical(completed)
 
 
+def select_difficulty_questions(
+    questions: list[Question],
+    count: int,
+    preferred_answers: set[str] | None = None,
+) -> list[Question]:
+    """Select unique questions using an exact 40/30/30 difficulty allocation."""
+    targets = difficulty_counts(count)
+    preferred = preferred_answers or set()
+    selected: list[Question] = []
+    seen_answers: set[str] = set()
+    seen_identities: set[tuple[str, str]] = set()
+    for difficulty in DIFFICULTIES:
+        pool = [question for question in questions if question.difficulty == difficulty]
+        random.shuffle(pool)
+        pool.sort(key=lambda question: question.answer.casefold() not in preferred)
+        for question in pool:
+            answer = question.answer.casefold()
+            identity = question_identity(question)
+            if answer in seen_answers or identity in seen_identities:
+                continue
+            selected.append(question)
+            seen_answers.add(answer)
+            seen_identities.add(identity)
+            if (
+                sum(item.difficulty == difficulty for item in selected)
+                >= targets[difficulty]
+            ):
+                break
+    random.shuffle(selected)
+    return selected
+
+
 class QuestionCacheStore:
-    """Persist reusable questions and track which ones each user has received."""
+    """Persist answered questions and track which ones each user has answered."""
 
     def __init__(self, path: Path | str) -> None:
         self.connection = sqlite3.connect(path, check_same_thread=False)
@@ -776,6 +834,7 @@ class QuestionCacheStore:
                 source_key TEXT NOT NULL,
                 prompt TEXT NOT NULL,
                 answer TEXT NOT NULL,
+                difficulty TEXT NOT NULL DEFAULT 'medium',
                 template_key TEXT NOT NULL,
                 sentence_key TEXT NOT NULL,
                 use_count INTEGER NOT NULL DEFAULT 0 CHECK (use_count >= 0),
@@ -785,6 +844,15 @@ class QuestionCacheStore:
             )
             """
         )
+        cache_columns = {
+            str(row[1])
+            for row in self.connection.execute("PRAGMA table_info(question_cache)")
+        }
+        if "difficulty" not in cache_columns:
+            self.connection.execute(
+                "ALTER TABLE question_cache "
+                "ADD COLUMN difficulty TEXT NOT NULL DEFAULT 'medium'"
+            )
         self.connection.execute(
             """
             CREATE INDEX IF NOT EXISTS question_cache_rotation
@@ -793,26 +861,28 @@ class QuestionCacheStore:
         )
         self.connection.execute(
             """
-            CREATE TABLE IF NOT EXISTS question_deliveries (
+            CREATE TABLE IF NOT EXISTS question_answers (
                 user_id INTEGER NOT NULL,
                 source_key TEXT NOT NULL,
                 sentence_key TEXT NOT NULL,
-                delivered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                answered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (user_id, source_key, sentence_key)
             )
             """
         )
         self.connection.execute(
             """
-            CREATE INDEX IF NOT EXISTS question_deliveries_lookup
-            ON question_deliveries(user_id, source_key)
+            CREATE INDEX IF NOT EXISTS question_answers_lookup
+            ON question_answers(user_id, source_key)
             """
         )
         self.connection.commit()
 
     @staticmethod
     def source_key(source: Source) -> str:
-        material = f"{source.name}\0{source.text}".encode("utf-8")
+        material = f"{CACHE_SCHEMA_VERSION}\0{source.name}\0{source.text}".encode(
+            "utf-8"
+        )
         return hashlib.sha256(material).hexdigest()
 
     async def unseen_candidates(
@@ -829,19 +899,22 @@ class QuestionCacheStore:
     ) -> list[Question]:
         rows = self.connection.execute(
             """
-            SELECT cache.prompt, cache.answer
+            SELECT cache.prompt, cache.answer, cache.difficulty
             FROM question_cache AS cache
-            LEFT JOIN question_deliveries AS delivery
-              ON delivery.user_id = ?
-             AND delivery.source_key = cache.source_key
-             AND delivery.sentence_key = cache.sentence_key
-            WHERE cache.source_key = ? AND delivery.sentence_key IS NULL
+            LEFT JOIN question_answers AS answered
+              ON answered.user_id = ?
+             AND answered.source_key = cache.source_key
+             AND answered.sentence_key = cache.sentence_key
+            WHERE cache.source_key = ? AND answered.sentence_key IS NULL
             ORDER BY cache.use_count ASC, RANDOM()
             LIMIT ?
             """,
             (user_id, source_key, limit),
         ).fetchall()
-        return [Question(str(prompt), str(answer)) for prompt, answer in rows]
+        return [
+            Question(str(prompt), str(answer), str(difficulty))
+            for prompt, answer, difficulty in rows
+        ]
 
     async def store(self, source: Source, questions: list[Question]) -> None:
         if not questions:
@@ -859,6 +932,7 @@ class QuestionCacheStore:
                     source_key,
                     question.prompt,
                     question.answer,
+                    question.difficulty,
                     template_key,
                     sentence_key,
                 )
@@ -867,8 +941,8 @@ class QuestionCacheStore:
             self.connection.executemany(
                 """
                 INSERT OR IGNORE INTO question_cache (
-                    source_key, prompt, answer, template_key, sentence_key
-                ) VALUES (?, ?, ?, ?, ?)
+                    source_key, prompt, answer, difficulty, template_key, sentence_key
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )
@@ -886,7 +960,7 @@ class QuestionCacheStore:
             )
             self.connection.execute(
                 """
-                DELETE FROM question_deliveries
+                DELETE FROM question_answers
                 WHERE source_key = ? AND sentence_key NOT IN (
                     SELECT sentence_key FROM question_cache WHERE source_key = ?
                 )
@@ -894,7 +968,7 @@ class QuestionCacheStore:
                 (source_key, source_key),
             )
 
-    async def mark_delivered(
+    async def mark_answered(
         self, source: Source, user_id: int, questions: list[Question]
     ) -> None:
         if not questions:
@@ -902,15 +976,15 @@ class QuestionCacheStore:
         key = self.source_key(source)
         sentence_keys = [question_identity(question)[1] for question in questions]
         async with self.lock:
-            await asyncio.to_thread(self._mark_delivered, key, user_id, sentence_keys)
+            await asyncio.to_thread(self._mark_answered, key, user_id, sentence_keys)
 
-    def _mark_delivered(
+    def _mark_answered(
         self, source_key: str, user_id: int, sentence_keys: list[str]
     ) -> None:
         with self.connection:
             self.connection.executemany(
                 """
-                INSERT OR IGNORE INTO question_deliveries (
+                INSERT OR IGNORE INTO question_answers (
                     user_id, source_key, sentence_key
                 ) VALUES (?, ?, ?)
                 """,
@@ -958,6 +1032,7 @@ class OpenRouterGenerator:
             scope, highlighted_words, highlighted_count
         )
         free_count = generation_count - len(highlighted_targets)
+        generated_difficulties = difficulty_counts(generation_count)
         schema = {
             "type": "object",
             "properties": {
@@ -983,8 +1058,13 @@ class OpenRouterGenerator:
                                 "minLength": 1,
                                 "description": "All remaining sentence text after the answer, including final punctuation.",
                             },
+                            "difficulty": {
+                                "type": "string",
+                                "enum": list(DIFFICULTIES),
+                                "description": "The item's difficulty: easy, medium, or hard.",
+                            },
                         },
-                        "required": ["before", "answer", "after"],
+                        "required": ["before", "answer", "after", "difficulty"],
                         "additionalProperties": False,
                     },
                 }
@@ -997,6 +1077,9 @@ class OpenRouterGenerator:
             highlighted_targets=json.dumps(highlighted_targets, ensure_ascii=False),
             highlighted_count=len(highlighted_targets),
             free_count=free_count,
+            easy_count=generated_difficulties["easy"],
+            medium_count=generated_difficulties["medium"],
+            hard_count=generated_difficulties["hard"],
             source_text=source.text,
         )
         payload = {
@@ -1054,6 +1137,17 @@ class OpenRouterGenerator:
                         selected = self._select_questions(
                             candidates, count, set(highlighted_targets)
                         )
+                        if len(selected) < count:
+                            last_error = BotError(
+                                "Generated questions did not satisfy the required "
+                                "difficulty distribution."
+                            )
+                            if attempt == 0:
+                                LOGGER.warning(
+                                    "%s Retrying for replacements.", last_error
+                                )
+                                payload["temperature"] = 0.2
+                                continue
                         await self._reconcile_highlighted(
                             scope, highlighted_targets, selected
                         )
@@ -1091,26 +1185,7 @@ class OpenRouterGenerator:
     def _select_questions(
         questions: list[Question], count: int, highlighted_targets: set[str]
     ) -> list[Question]:
-        highlighted = [
-            question
-            for question in questions
-            if question.answer.casefold() in highlighted_targets
-        ]
-        general = [
-            question
-            for question in questions
-            if question.answer.casefold() not in highlighted_targets
-        ]
-        random.shuffle(highlighted)
-        random.shuffle(general)
-
-        highlighted_goal = min(len(highlighted), max(1, round(count * 0.7)))
-        selected = highlighted[:highlighted_goal]
-        selected.extend(general[: count - len(selected)])
-        if len(selected) < count:
-            selected.extend(highlighted[highlighted_goal:])
-        random.shuffle(selected)
-        return selected[:count]
+        return select_difficulty_questions(questions, count, highlighted_targets)
 
     async def _reconcile_highlighted(
         self, scope: str, reserved: list[str], questions: list[Question]
@@ -1182,12 +1257,17 @@ class OpenRouterGenerator:
                 before = item.get("before")
                 answer = item.get("answer")
                 after = item.get("after")
+                difficulty = item.get("difficulty", "medium")
                 if (
                     not isinstance(before, str)
                     or not isinstance(answer, str)
                     or not isinstance(after, str)
+                    or not isinstance(difficulty, str)
                 ):
                     raise BotError("incomplete question")
+                difficulty = difficulty.casefold().strip()
+                if difficulty not in DIFFICULTIES:
+                    raise BotError("invalid difficulty")
                 if not after.strip():
                     raise BotError("missing sentence text after the answer")
                 if before.rstrip().endswith((".", "!", "?")):
@@ -1207,7 +1287,7 @@ class OpenRouterGenerator:
                     raise BotError("highlighted answer was not selected for this test")
                 if answer_key in seen_answers:
                     raise BotError("duplicate answer")
-                question = build_question(before, answer, after)
+                question = build_question(before, answer, after, difficulty)
                 template_key, sentence_key = question_identity(question)
                 if template_key in seen_templates:
                     raise BotError("duplicate question template")
@@ -1267,21 +1347,23 @@ class HybridCachedGenerator:
             cached = await self.cache_store.unseen_candidates(
                 source, user_id, max(count * 5, count)
             )
-            questions: list[Question] = []
-            self._add_unique(questions, cached, count)
+            available: list[Question] = []
+            self._add_unique(available, cached, CACHE_LIMIT_PER_SOURCE)
+            questions = select_difficulty_questions(available, count)
 
             generation_errors: list[BotError] = []
             for _ in range(2):
-                missing = count - len(questions)
-                if missing <= 0:
+                if len(questions) >= count:
                     break
                 try:
-                    fresh = await self.upstream.generate(source, missing)
+                    # Ask for a complete weighted batch because the cache may be
+                    # missing one specific difficulty rather than a raw count.
+                    fresh = await self.upstream.generate(source, count)
                 except BotError as error:
                     generation_errors.append(error)
                     break
-                await self.cache_store.store(source, fresh)
-                self._add_unique(questions, fresh, count)
+                self._add_unique(available, fresh, CACHE_LIMIT_PER_SOURCE)
+                questions = select_difficulty_questions(available, count)
 
             if not questions:
                 if generation_errors:
@@ -1295,9 +1377,14 @@ class HybridCachedGenerator:
                     user_id,
                 )
 
-            await self.cache_store.mark_delivered(source, user_id, questions)
             random.shuffle(questions)
             return questions[:count]
+
+    async def record_answered(
+        self, source: Source, user_id: int, question: Question
+    ) -> None:
+        await self.cache_store.store(source, [question])
+        await self.cache_store.mark_answered(source, user_id, [question])
 
     async def aclose(self) -> None:
         try:
@@ -1325,23 +1412,24 @@ class QuizBot:
     LEADERBOARD = "🏆 Leaderboard"
     STATS = "📊 My Stats"
     HELP = "ℹ️ Help"
+    STOP = "🛑 Stop"
     HINT = "💡 Hint"
     SKIP = "⏭ Skip"
-    END = "🛑 End Quiz"
+    LEGACY_END = "🛑 End Quiz"
 
     MAIN_KEYBOARD = ReplyKeyboardMarkup(
         [
             [QUICK],
             [CUSTOM, FULL_TEST],
             [LEADERBOARD, STATS],
-            [HELP],
+            [STOP, HELP],
         ],
         resize_keyboard=True,
         is_persistent=True,
         input_field_placeholder="Choose an option…",
     )
     QUIZ_KEYBOARD = ReplyKeyboardMarkup(
-        [[HINT, SKIP], [END]],
+        [[HINT, SKIP], [STOP]],
         resize_keyboard=True,
         is_persistent=True,
         input_field_placeholder="Type the missing word…",
@@ -1361,6 +1449,7 @@ class QuizBot:
         self.stats_store = stats_store or StatsStore(":memory:")
         self.admin_user_ids = admin_user_ids or set()
         self.busy_users: set[int] = set()
+        self.generation_tasks: dict[int, asyncio.Task[Any]] = {}
         self.sent_deliveries: dict[int, tuple[int, int]] = {}
 
     @staticmethod
@@ -1424,6 +1513,7 @@ class QuizBot:
             "📄 <b>Full Test + Keys</b> creates a printable test file.\n\n"
             "🏆 <b>Leaderboard</b> shows the top learners.\n"
             "📊 <b>My Stats</b> tracks your progress.\n\n"
+            "🛑 Send <b>stop</b> at any time to cancel every active session.\n\n"
             "👇 Choose an option below—no commands to remember.\n\n"
             "👨‍💻 Made by <b>@arkarwine</b>",
             parse_mode=ParseMode.HTML,
@@ -1570,6 +1660,9 @@ class QuizBot:
             return
 
         self.busy_users.add(user_id)
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            self.generation_tasks[user_id] = current_task
         completed = False
         try:
             await application.bot.send_message(
@@ -1582,7 +1675,7 @@ class QuizBot:
             questions = await self.questions_for_user(source, count, user_id)
             random.shuffle(questions)
             if flow == "quiz":
-                session = Session(questions)
+                session = Session(questions, source=source)
                 application.user_data[user_id]["session"] = session
                 application.user_data[user_id]["session_chat_id"] = chat_id
                 application.user_data[user_id].pop("pending_generation", None)
@@ -1626,6 +1719,8 @@ class QuizBot:
                 )
         finally:
             self.busy_users.discard(user_id)
+            if self.generation_tasks.get(user_id) is current_task:
+                self.generation_tasks.pop(user_id, None)
             if completed:
                 LOGGER.info("Recovered pending %s request for user %d", flow, user_id)
 
@@ -1644,6 +1739,19 @@ class QuizBot:
             questions = await generate_for_user(source, count, user_id)
             return cast(list[Question], questions)
         return await self.generator.generate(source, count)
+
+    async def record_answered_question(
+        self, session: Session, user_id: int, question: Question
+    ) -> None:
+        if session.source is None:
+            return
+        record_answered = getattr(self.generator, "record_answered", None)
+        if not callable(record_answered):
+            return
+        try:
+            await record_answered(session.source, user_id, question)
+        except Exception as error:
+            LOGGER.warning("Could not cache answered question: %s", error)
 
     def unit_keyboard(self, flow: str) -> InlineKeyboardMarkup:
         def callback_for(unit: str) -> str:
@@ -1692,6 +1800,8 @@ class QuizBot:
             "2️⃣ Read the sentence and type the complete missing word.\n"
             "3️⃣ Use 💡 <b>Hint</b> if you are stuck, or ⏭ <b>Skip</b>.\n"
             "4️⃣ Receive instant feedback and a final score.\n\n"
+            "🛑 Tap <b>Stop</b> or send <b>stop</b> to cancel an active quiz or AI "
+            "request immediately.\n\n"
             "📄 <b>Full Test + Keys</b> downloads a complete numbered test that you can "
             "print, share, or study offline.\n\n"
             "💡 Your answers are not case-sensitive."
@@ -1896,9 +2006,83 @@ class QuizBot:
     async def handle_message(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
+        message = update.effective_message
+        if (
+            message
+            and message.text
+            and message.text.strip().casefold()
+            in {
+                "stop",
+                self.STOP.casefold(),
+                self.LEGACY_END.casefold(),
+            }
+        ):
+            await self.stop_sessions(update, context)
+            return
         if await self.capture_broadcast_message(update, context):
             return
         await self.answer(update, context)
+
+    async def stop_sessions(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        user_id = self.user_id(update)
+        generation = self.generation_tasks.get(user_id)
+        current_task = asyncio.current_task()
+        if generation is not None and generation is not current_task:
+            generation.cancel()
+            try:
+                await generation
+            except asyncio.CancelledError:
+                pass
+            except Exception as error:
+                LOGGER.warning(
+                    "Generation task for user %d ended while stopping: %s",
+                    user_id,
+                    error,
+                )
+
+        user_data = self.user_data(context)
+        active = bool(
+            generation
+            or user_id in self.busy_users
+            or any(
+                key in user_data
+                for key in (
+                    "session",
+                    "pending_generation",
+                    "broadcast_state",
+                    "broadcast_draft",
+                )
+            )
+        )
+        for key in (
+            "session",
+            "session_chat_id",
+            "pending_generation",
+            "broadcast_state",
+            "broadcast_draft",
+        ):
+            user_data.pop(key, None)
+        self.busy_users.discard(user_id)
+        self.generation_tasks.pop(user_id, None)
+        if update.effective_chat:
+            self.sent_deliveries.pop(update.effective_chat.id, None)
+        await self.persist_user_data(context, user_id)
+
+        text = (
+            "🛑 <b>Stopped.</b> All your active sessions and requests were cancelled."
+            if active
+            else "🛑 <b>Nothing is running.</b> You can start a new quiz now."
+        )
+        if update.callback_query:
+            await self.safe_edit(update.callback_query, text)
+        elif update.effective_message:
+            await update.effective_message.reply_text(
+                text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=self.MAIN_KEYBOARD,
+            )
 
     @staticmethod
     def retry_delay(error: RetryAfter) -> float:
@@ -2335,6 +2519,9 @@ class QuizBot:
             return
         source = self.catalog.select(unit)
         self.busy_users.add(user_id)
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            self.generation_tasks[user_id] = current_task
         user_data = self.user_data(context)
         if update.effective_chat:
             user_data["pending_generation"] = self.pending_generation(
@@ -2374,9 +2561,11 @@ class QuizBot:
             return
         finally:
             self.busy_users.discard(user_id)
+            if self.generation_tasks.get(user_id) is current_task:
+                self.generation_tasks.pop(user_id, None)
 
         random.shuffle(questions)
-        session = Session(questions)
+        session = Session(questions, source=source)
         user_data["session"] = session
         if update.effective_chat:
             user_data["session_chat_id"] = update.effective_chat.id
@@ -2418,6 +2607,9 @@ class QuizBot:
             return
         source = self.catalog.select(unit)
         self.busy_users.add(user_id)
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            self.generation_tasks[user_id] = current_task
         user_data = self.user_data(context)
         if update.effective_chat:
             user_data["pending_generation"] = self.pending_generation(
@@ -2454,6 +2646,8 @@ class QuizBot:
             return
         finally:
             self.busy_users.discard(user_id)
+            if self.generation_tasks.get(user_id) is current_task:
+                self.generation_tasks.pop(user_id, None)
 
         random.shuffle(questions)
         content = format_full_test(source, questions).encode("utf-8")
@@ -2530,18 +2724,8 @@ class QuizBot:
                     f"⏭ Skipped. Answer: <b>{html.escape(question.answer)}</b>",
                 )
             return
-        if message.text == self.END:
-            await self.finish_quiz(
-                message,
-                context,
-                session,
-                "🛑 Quiz ended early.",
-                player_id,
-                player_name,
-            )
-            return
-
         question = session.questions[session.position]
+        await self.record_answered_question(session, player_id, question)
         correct = normalize(message.text) == normalize(question.answer)
         if correct:
             session.correct += 1
@@ -2685,6 +2869,7 @@ async def set_commands(application: TelegramApplication) -> None:
             BotCommand("start", "Open the main menu 🏠"),
             BotCommand("quiz", "Start a custom quiz 🧠"),
             BotCommand("fulltest", "Create a test with keys 📄"),
+            BotCommand("stop", "Cancel every active session 🛑"),
             BotCommand("leaderboard", "View the top learners 🏆"),
             BotCommand("stats", "View your personal progress 📊"),
             BotCommand("unsubscribe", "Disable broadcast announcements 🔕"),
@@ -2740,6 +2925,7 @@ def build_application(
     application.add_handler(CommandHandler("menu", bot.start))
     application.add_handler(CommandHandler("quiz", bot.quiz))
     application.add_handler(CommandHandler("fulltest", bot.fulltest))
+    application.add_handler(CommandHandler("stop", bot.stop_sessions))
     application.add_handler(CommandHandler("leaderboard", bot.show_leaderboard))
     application.add_handler(CommandHandler("stats", bot.show_stats))
     application.add_handler(CommandHandler("dashboard", bot.show_admin_dashboard))

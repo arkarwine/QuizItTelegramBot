@@ -10,8 +10,14 @@ The Telegram application processes up to 16 updates concurrently, so one user wa
 
 To reduce OpenRouter cost and waiting time, requests use a shared SQLite question
 cache. Each learner receives unseen cached questions first. The AI is called only
-when that learner has exhausted the available cache for the selected source, and
-the valid new questions are cached for subsequent learners.
+when that learner has exhausted the available cache for the selected source.
+Generated quiz questions enter the shared cache only after the learner submits an
+answer. Unanswered, skipped, stopped, and unshown questions are not cached or
+marked as seen.
+
+Every delivered test preserves a 40% easy, 30% medium, and 30% hard difficulty
+mix after integer rounding. Difficulty labels are stored with cached questions,
+and cache selection fills each difficulty quota independently.
 
 ## User experience
 
@@ -22,6 +28,7 @@ Users start with a persistent native Telegram menu—no commands to learn:
 - 📄 **Full Test + Keys** — downloads a printable test file
 - 🏆 **Leaderboard** — ranks learners by correct answers and accuracy
 - 📊 **My Stats** — shows personal rank, points, accuracy, and best score
+- 🛑 **Stop** — immediately cancels active quizzes and AI generation
 - ℹ️ **Help** — visual onboarding and instructions
 
 During a quiz, Telegram keyboard controls provide hints, skipping, and early exit. Questions include progress indicators, immediate feedback, and a final score summary.
@@ -56,10 +63,10 @@ Active quiz sessions, in-progress quiz/full-test generation, broadcast drafts, a
 
 The app rotates through the least-used bold and KEY VOCABULARY words for each source selection, while the AI continues to choose non-highlighted words freely. Only highlighted-word counters are stored in `highlighted_usage.sqlite3`; questions and user answers are not stored.
 
-Reusable question text, answer keys, and per-user delivery history are stored in
+Reusable answered question text, answer keys, and per-user answer history are stored in
 `question_cache.sqlite3`. The cache is keyed by a hash of the selected source and
-is automatically limited to 500 questions per source version. Delivery history
-contains Telegram user IDs only so the bot does not repeat cached questions for a
+is automatically limited to 500 questions per source version. Answer history
+contains Telegram user IDs only so the bot does not repeat answered questions for a
 learner.
 
 Interactive quiz results are aggregated in `quiz_stats.sqlite3` for the leaderboard, personal stats, and admin dashboard. The database stores Telegram user IDs, display names, and score totals; individual answers and question text are not stored.
@@ -75,6 +82,7 @@ The generation instructions and example style are maintained separately in `prom
 - `/start` — open the native main menu
 - `/quiz 4 15` — Unit 4 interactive quiz with 15 questions
 - `/fulltest all 10` — complete test file with keys
+- `/stop` — cancel every active quiz or generation request
 - `/leaderboard` — global top learners
 - `/stats` — personal progress statistics
 - `/dashboard` — admin-only system dashboard
