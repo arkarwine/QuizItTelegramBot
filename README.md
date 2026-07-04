@@ -1,6 +1,8 @@
 # Cloze Master Telegram Bot
 
-An AI-powered, button-first Telegram learning app for students preparing for Myanmar’s Grade 12 Matriculation Examination, built with `python-telegram-bot` and OpenRouter's `google/gemini-2.5-flash` model.
+> **🎓 Myanmar Grade 12 Matriculation Examination Preparation 🇲🇲**
+
+An AI-powered, button-first Telegram learning app built specifically for Grade 12 matriculation exam practice, using `python-telegram-bot` and OpenRouter's `google/gemini-2.5-flash` model.
 
 Telegram and OpenRouter use fully asynchronous HTTP clients, so network requests do not block the bot event loop.
 

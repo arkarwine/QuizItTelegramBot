@@ -963,9 +963,9 @@ class QuizBot:
         )
         await message.reply_text(
             f"👋 <b>Welcome, {first_name}!</b>\n\n"
+            "🎓 <b>MYANMAR GRADE 12 MATRICULATION EXAM PREPARATION</b> 🇲🇲\n\n"
             "🧩 <b>Cloze Master</b> turns your textbook units into fresh vocabulary "
-            "challenges powered by AI. It is designed for students preparing for "
-            "Myanmar’s <b>Grade 12 Matriculation Examination</b>.\n\n"
+            "challenges powered by AI and focused on your matriculation exam.\n\n"
             "⚡ <b>Quick Quiz</b> starts immediately with your saved preferences.\n"
             "🧠 <b>Custom Quiz</b> lets you choose a unit and length.\n"
             "📄 <b>Full Test + Keys</b> creates a printable test file.\n\n"
@@ -1101,8 +1101,8 @@ class QuizBot:
     async def show_help(self, update: Update) -> None:
         text = (
             "ℹ️ <b>How to Play</b>\n\n"
-            "🎓 Practise vocabulary for Myanmar’s <b>Grade 12 Matriculation "
-            "Examination</b> using your textbook units.\n\n"
+            "🎓 <b>MYANMAR GRADE 12 MATRICULATION EXAM PREPARATION</b> 🇲🇲\n"
+            "Practise directly from your Grade 12 textbook units.\n\n"
             "1️⃣ Choose <b>Quick Quiz</b> or build a <b>Custom Quiz</b>.\n"
             "2️⃣ Read the sentence and type the complete missing word.\n"
             "3️⃣ Use 💡 <b>Hint</b> if you are stuck, or ⏭ <b>Skip</b>.\n"
@@ -2074,13 +2074,14 @@ async def set_commands(application: TelegramApplication) -> None:
         ]
     )
     await application.bot.set_my_short_description(
-        "AI cloze practice for Myanmar’s Grade 12 Matriculation Examination 🧩 Made by @arkarwine"
+        "🎓 Myanmar Grade 12 Matriculation Exam Prep 🇲🇲 | AI Cloze Practice 🧩 | @arkarwine"
     )
     await application.bot.set_my_description(
-        "Prepare for Myanmar’s Grade 12 Matriculation Examination with fresh "
-        "AI-generated cloze quizzes based on your textbook units. Choose a unit, set "
-        "your quiz length, receive instant feedback, and download complete practice "
-        "tests with answer keys. Made by @arkarwine."
+        "🎓 MYANMAR GRADE 12 MATRICULATION EXAM PREPARATION 🇲🇲\n\n"
+        "Practise with fresh AI-generated cloze quizzes based directly on your Grade "
+        "12 textbook units. Choose a unit, set your quiz length, receive instant "
+        "feedback, and download complete practice tests with answer keys. Made by "
+        "@arkarwine."
     )
 
 
