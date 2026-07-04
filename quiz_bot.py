@@ -970,7 +970,8 @@ class QuizBot:
             "📄 <b>Full Test + Keys</b> creates a printable test file.\n\n"
             "🏆 <b>Leaderboard</b> shows the top learners.\n"
             "📊 <b>My Stats</b> tracks your progress.\n\n"
-            "👇 Choose an option below—no commands to remember.",
+            "👇 Choose an option below—no commands to remember.\n\n"
+            "👨‍💻 Made by <b>@arkarwine</b>",
             parse_mode=ParseMode.HTML,
             reply_markup=self.MAIN_KEYBOARD,
         )
@@ -2070,11 +2071,12 @@ async def set_commands(application: TelegramApplication) -> None:
         ]
     )
     await application.bot.set_my_short_description(
-        "AI-powered cloze quizzes from your textbook units 🧩"
+        "AI-powered cloze quizzes from your textbook units 🧩 Made by @arkarwine"
     )
     await application.bot.set_my_description(
         "Master vocabulary with fresh AI-generated cloze quizzes. Choose a unit, set "
-        "your quiz length, get instant feedback, and download complete tests with keys."
+        "your quiz length, get instant feedback, and download complete tests with keys. "
+        "Made by @arkarwine."
     )
 
 
