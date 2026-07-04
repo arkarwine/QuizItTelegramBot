@@ -44,10 +44,14 @@ Copy-Item .env.example .env
 Add `BOT_TOKEN` and `OPENROUTER_API_KEY` to `.env`, then run:
 
 ```powershell
-py quiz_bot.py
+powershell -ExecutionPolicy Bypass -File .\run_bot.ps1
 ```
 
+The watchdog restarts the Python process after an unexpected non-zero exit. A clean exit remains stopped.
+
 User preferences are persisted automatically in `bot_state.pkl`. Unit Markdown files are loaded from `units/`.
+
+Active quiz sessions, in-progress quiz/full-test generation, broadcast drafts, and unfinished broadcast recipient lists are persisted. After a restart, quizzes resume at the current question, interrupted generation restarts automatically, and broadcasts continue with recipients that were still pending.
 
 The app rotates through the least-used bold and KEY VOCABULARY words for each source selection, while the AI continues to choose non-highlighted words freely. Only highlighted-word counters are stored in `highlighted_usage.sqlite3`; questions and user answers are not stored.
 

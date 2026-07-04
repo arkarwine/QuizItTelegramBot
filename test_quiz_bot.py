@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from telegram import Update
 from telegram.error import BadRequest, Forbidden
@@ -36,6 +36,14 @@ from quiz_bot import (
 
 
 BASE = Path(__file__).resolve().parent
+
+
+def persistence_app(**values: Any) -> SimpleNamespace:
+    return SimpleNamespace(
+        update_persistence=AsyncMock(),
+        mark_data_for_update_persistence=Mock(),
+        **values,
+    )
 
 
 class StubGenerator:
@@ -325,6 +333,33 @@ class Tests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_interrupted_broadcast_retains_only_pending_recipients(self) -> None:
+        async def scenario() -> None:
+            with TemporaryDirectory() as directory:
+                path = Path(directory) / "stats.sqlite3"
+                store = StatsStore(path)
+                broadcast_id = await store.create_broadcast(42, 42, 900, [1, 2])
+                await store.mark_broadcast_delivery(broadcast_id, 1, "delivered")
+                await store.close()
+
+                reopened = StatsStore(path)
+                self.assertEqual(
+                    [(broadcast_id, 42, 900)],
+                    await reopened.pending_broadcasts(),
+                )
+                self.assertEqual(
+                    [2],
+                    await reopened.pending_broadcast_recipients(broadcast_id),
+                )
+                await reopened.mark_broadcast_delivery(broadcast_id, 2, "failed")
+                await reopened.finish_broadcast(broadcast_id)
+                self.assertEqual(
+                    (2, 1, 1), await reopened.broadcast_counts(broadcast_id)
+                )
+                await reopened.close()
+
+        asyncio.run(scenario())
+
     def test_duplicate_generated_answers_are_skipped(self) -> None:
         items = [
             {"before": "It is", "answer": "valid", "after": "."},
@@ -480,6 +515,35 @@ class Tests(unittest.TestCase):
 
 
 class CallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pending_quiz_generation_resumes_after_restart(self) -> None:
+        bot = QuizBot(UnitCatalog({4: "source"}), StubGenerator())
+        user_data: dict[int, dict[str, object]] = {
+            42: {
+                "pending_generation": {
+                    "flow": "quiz",
+                    "unit": "4",
+                    "count": 2,
+                    "chat_id": 42,
+                }
+            }
+        }
+        application = SimpleNamespace(
+            user_data=user_data,
+            bot=AsyncMock(),
+            mark_data_for_update_persistence=Mock(),
+            update_persistence=AsyncMock(),
+        )
+
+        await bot.resume_generation(
+            cast(Any, application), 42, cast(Any, user_data[42]["pending_generation"])
+        )
+
+        self.assertNotIn("pending_generation", user_data[42])
+        self.assertIsInstance(user_data[42].get("session"), Session)
+        self.assertEqual(42, user_data[42].get("session_chat_id"))
+        self.assertGreaterEqual(application.bot.send_message.await_count, 2)
+        application.mark_data_for_update_persistence.assert_called()
+
     async def test_unchanged_message_edit_is_ignored(self) -> None:
         query = SimpleNamespace(
             edit_message_text=AsyncMock(
@@ -518,7 +582,11 @@ class CallbackTests(unittest.IsolatedAsyncioTestCase):
                 correct=1,
             )
             message = SimpleNamespace(chat_id=10, reply_text=AsyncMock())
-            context = SimpleNamespace(user_data={"session": session}, bot=AsyncMock())
+            context = SimpleNamespace(
+                user_data={"session": session},
+                bot=AsyncMock(),
+                application=persistence_app(),
+            )
 
             await bot.finish_quiz(
                 cast(Any, message),
@@ -580,7 +648,11 @@ class CallbackTests(unittest.IsolatedAsyncioTestCase):
             effective_message=message,
             callback_query=None,
         )
-        context = SimpleNamespace(user_data={}, bot=AsyncMock())
+        context = SimpleNamespace(
+            user_data={},
+            bot=AsyncMock(),
+            application=persistence_app(),
+        )
 
         await bot.show_admin_dashboard(
             cast(Update, update), cast(ContextTypes.DEFAULT_TYPE, context)
@@ -626,7 +698,11 @@ class CallbackTests(unittest.IsolatedAsyncioTestCase):
             effective_message=prompt_message,
             callback_query=None,
         )
-        context = SimpleNamespace(user_data={}, bot=AsyncMock())
+        context = SimpleNamespace(
+            user_data={},
+            bot=AsyncMock(),
+            application=persistence_app(),
+        )
         await bot.start_broadcast(
             cast(Update, start_update), cast(ContextTypes.DEFAULT_TYPE, context)
         )
@@ -687,7 +763,7 @@ class CallbackTests(unittest.IsolatedAsyncioTestCase):
                     "broadcast_draft": {"chat_id": 42, "message_id": 900},
                 },
                 bot=SimpleNamespace(copy_message=AsyncMock(side_effect=copy_message)),
-                application=SimpleNamespace(create_task=create_task),
+                application=persistence_app(create_task=create_task),
             )
 
             await bot.send_broadcast(
@@ -730,7 +806,11 @@ class CallbackTests(unittest.IsolatedAsyncioTestCase):
             effective_message=message,
             effective_user=SimpleNamespace(id=42, full_name="Learner"),
         )
-        context = SimpleNamespace(user_data={"session": session}, bot=AsyncMock())
+        context = SimpleNamespace(
+            user_data={"session": session},
+            bot=AsyncMock(),
+            application=persistence_app(),
+        )
 
         await bot.answer(cast(Update, update), cast(ContextTypes.DEFAULT_TYPE, context))
 
@@ -759,7 +839,11 @@ class CallbackTests(unittest.IsolatedAsyncioTestCase):
             effective_chat=SimpleNamespace(id=10),
             effective_user=SimpleNamespace(id=20),
         )
-        context = SimpleNamespace(user_data={}, bot=AsyncMock())
+        context = SimpleNamespace(
+            user_data={},
+            bot=AsyncMock(),
+            application=persistence_app(),
+        )
 
         await bot.callback(
             cast(Update, update), cast(ContextTypes.DEFAULT_TYPE, context)

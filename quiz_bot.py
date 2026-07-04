@@ -342,16 +342,36 @@ class StatsStore:
             CREATE TABLE IF NOT EXISTS broadcasts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 admin_id INTEGER NOT NULL,
+                source_chat_id INTEGER,
+                source_message_id INTEGER,
                 total_recipients INTEGER NOT NULL,
                 delivered INTEGER NOT NULL DEFAULT 0,
                 failed INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 completed_at TEXT
             );
+            CREATE TABLE IF NOT EXISTS broadcast_deliveries (
+                broadcast_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                PRIMARY KEY (broadcast_id, user_id)
+            );
             INSERT OR IGNORE INTO bot_users (user_id, display_name)
             SELECT user_id, display_name FROM player_stats;
             """
         )
+        broadcast_columns = {
+            str(row[1])
+            for row in self.connection.execute("PRAGMA table_info(broadcasts)")
+        }
+        if "source_chat_id" not in broadcast_columns:
+            self.connection.execute(
+                "ALTER TABLE broadcasts ADD COLUMN source_chat_id INTEGER"
+            )
+        if "source_message_id" not in broadcast_columns:
+            self.connection.execute(
+                "ALTER TABLE broadcasts ADD COLUMN source_message_id INTEGER"
+            )
         self.connection.commit()
 
     async def register_user(
@@ -403,43 +423,142 @@ class StatsStore:
         ).fetchall()
         return [int(row[0]) for row in rows]
 
-    async def create_broadcast(self, admin_id: int, total_recipients: int) -> int:
+    async def create_broadcast(
+        self,
+        admin_id: int,
+        source_chat_id: int,
+        source_message_id: int,
+        recipients: list[int],
+    ) -> int:
         async with self.lock:
             return await asyncio.to_thread(
-                self._create_broadcast, admin_id, total_recipients
+                self._create_broadcast,
+                admin_id,
+                source_chat_id,
+                source_message_id,
+                recipients,
             )
 
-    def _create_broadcast(self, admin_id: int, total_recipients: int) -> int:
+    def _create_broadcast(
+        self,
+        admin_id: int,
+        source_chat_id: int,
+        source_message_id: int,
+        recipients: list[int],
+    ) -> int:
         with self.connection:
             cursor = self.connection.execute(
                 """
-                INSERT INTO broadcasts (admin_id, total_recipients)
+                INSERT INTO broadcasts (
+                    admin_id, source_chat_id, source_message_id, total_recipients
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (admin_id, source_chat_id, source_message_id, len(recipients)),
+            )
+            if cursor.lastrowid is None:
+                raise RuntimeError("Could not create broadcast record.")
+            broadcast_id = int(cursor.lastrowid)
+            self.connection.executemany(
+                """
+                INSERT INTO broadcast_deliveries (broadcast_id, user_id)
                 VALUES (?, ?)
                 """,
-                (admin_id, total_recipients),
+                ((broadcast_id, user_id) for user_id in recipients),
             )
-        if cursor.lastrowid is None:
-            raise RuntimeError("Could not create broadcast record.")
-        return int(cursor.lastrowid)
+        return broadcast_id
 
-    async def finish_broadcast(
-        self, broadcast_id: int, delivered: int, failed: int
+    async def pending_broadcasts(self) -> list[tuple[int, int, int]]:
+        async with self.lock:
+            return await asyncio.to_thread(self._pending_broadcasts)
+
+    def _pending_broadcasts(self) -> list[tuple[int, int, int]]:
+        rows = self.connection.execute(
+            """
+            SELECT id, source_chat_id, source_message_id
+            FROM broadcasts
+            WHERE completed_at IS NULL
+              AND source_chat_id IS NOT NULL
+              AND source_message_id IS NOT NULL
+            ORDER BY id
+            """
+        ).fetchall()
+        return [(int(row[0]), int(row[1]), int(row[2])) for row in rows]
+
+    async def pending_broadcast_recipients(self, broadcast_id: int) -> list[int]:
+        async with self.lock:
+            return await asyncio.to_thread(
+                self._pending_broadcast_recipients, broadcast_id
+            )
+
+    def _pending_broadcast_recipients(self, broadcast_id: int) -> list[int]:
+        rows = self.connection.execute(
+            """
+            SELECT user_id FROM broadcast_deliveries
+            WHERE broadcast_id = ? AND status = 'pending'
+            ORDER BY user_id
+            """,
+            (broadcast_id,),
+        ).fetchall()
+        return [int(row[0]) for row in rows]
+
+    async def mark_broadcast_delivery(
+        self, broadcast_id: int, user_id: int, status: str
     ) -> None:
         async with self.lock:
             await asyncio.to_thread(
-                self._finish_broadcast, broadcast_id, delivered, failed
+                self._mark_broadcast_delivery, broadcast_id, user_id, status
             )
 
-    def _finish_broadcast(self, broadcast_id: int, delivered: int, failed: int) -> None:
+    def _mark_broadcast_delivery(
+        self, broadcast_id: int, user_id: int, status: str
+    ) -> None:
+        with self.connection:
+            self.connection.execute(
+                """
+                UPDATE broadcast_deliveries SET status = ?
+                WHERE broadcast_id = ? AND user_id = ?
+                """,
+                (status, broadcast_id, user_id),
+            )
+
+    async def finish_broadcast(self, broadcast_id: int) -> None:
+        async with self.lock:
+            await asyncio.to_thread(self._finish_broadcast, broadcast_id)
+
+    def _finish_broadcast(self, broadcast_id: int) -> None:
         with self.connection:
             self.connection.execute(
                 """
                 UPDATE broadcasts
-                SET delivered = ?, failed = ?, completed_at = CURRENT_TIMESTAMP
+                SET delivered = (
+                        SELECT COUNT(*) FROM broadcast_deliveries
+                        WHERE broadcast_id = ? AND status = 'delivered'
+                    ),
+                    failed = (
+                        SELECT COUNT(*) FROM broadcast_deliveries
+                        WHERE broadcast_id = ? AND status = 'failed'
+                    ),
+                    completed_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                (delivered, failed, broadcast_id),
+                (broadcast_id, broadcast_id, broadcast_id),
             )
+
+    async def broadcast_counts(self, broadcast_id: int) -> tuple[int, int, int]:
+        async with self.lock:
+            return await asyncio.to_thread(self._broadcast_counts, broadcast_id)
+
+    def _broadcast_counts(self, broadcast_id: int) -> tuple[int, int, int]:
+        row = self.connection.execute(
+            """
+            SELECT total_recipients, delivered, failed
+            FROM broadcasts WHERE id = ?
+            """,
+            (broadcast_id,),
+        ).fetchone()
+        if row is None:
+            return (0, 0, 0)
+        return (int(row[0]), int(row[1]), int(row[2]))
 
     async def record_quiz(
         self,
@@ -1016,6 +1135,20 @@ class QuizBot:
         return cast(dict[str, object], context.user_data)
 
     @staticmethod
+    async def persist_user_data(
+        context: ContextTypes.DEFAULT_TYPE, user_id: int
+    ) -> None:
+        context.application.mark_data_for_update_persistence(user_ids=user_id)
+        await context.application.update_persistence()
+
+    @staticmethod
+    async def persist_application_user_data(
+        application: TelegramApplication, user_id: int
+    ) -> None:
+        application.mark_data_for_update_persistence(user_ids=user_id)
+        await application.update_persistence()
+
+    @staticmethod
     async def safe_edit(
         query: CallbackQuery,
         text: str,
@@ -1063,6 +1196,197 @@ class QuizBot:
             await self.generator.aclose()
         finally:
             await self.stats_store.close()
+
+    async def post_init(self, application: TelegramApplication) -> None:
+        await set_commands(application)
+        for user_id, raw_data in application.user_data.items():
+            data = cast(dict[str, object], raw_data)
+            pending = data.get("pending_generation")
+            if isinstance(pending, dict):
+                application.create_task(
+                    self.resume_generation(application, int(user_id), pending),
+                    name=f"resume-generation-{user_id}",
+                )
+                continue
+            session = data.get("session")
+            if isinstance(session, Session) and session.position < len(
+                session.questions
+            ):
+                chat_id = data.get("session_chat_id", user_id)
+                if isinstance(chat_id, int):
+                    application.create_task(
+                        self.send_session_question(
+                            application.bot,
+                            chat_id,
+                            session,
+                            "♻️ <b>Bot restarted.</b> Your quiz has been restored.",
+                        ),
+                        name=f"resume-session-{user_id}",
+                    )
+            broadcast_state = data.get("broadcast_state")
+            draft = data.get("broadcast_draft")
+            if broadcast_state in {"awaiting_message", "preview"}:
+                application.create_task(
+                    self.restore_broadcast_draft(
+                        application.bot, int(user_id), str(broadcast_state), draft
+                    ),
+                    name=f"restore-broadcast-draft-{user_id}",
+                )
+        for (
+            broadcast_id,
+            source_chat_id,
+            source_message_id,
+        ) in await self.stats_store.pending_broadcasts():
+            recipients = await self.stats_store.pending_broadcast_recipients(
+                broadcast_id
+            )
+            application.create_task(
+                self._deliver_broadcast(
+                    None,
+                    application.bot,
+                    broadcast_id,
+                    recipients,
+                    source_chat_id,
+                    source_message_id,
+                ),
+                name=f"resume-broadcast-{broadcast_id}",
+            )
+
+    async def restore_broadcast_draft(
+        self, bot: Bot, user_id: int, state: str, draft: object
+    ) -> None:
+        if state == "awaiting_message":
+            await bot.send_message(
+                user_id,
+                "♻️ <b>Bot restarted.</b> Your broadcast composer is still open.\n\n"
+                "Send the message you want to broadcast next.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=self.broadcast_cancel_keyboard(),
+            )
+            return
+        if not isinstance(draft, dict):
+            return
+        chat_id = draft.get("chat_id")
+        message_id = draft.get("message_id")
+        if not isinstance(chat_id, int) or not isinstance(message_id, int):
+            return
+        await bot.copy_message(
+            chat_id=chat_id,
+            from_chat_id=chat_id,
+            message_id=message_id,
+        )
+        recipients = len(await self.stats_store.broadcast_recipients())
+        await bot.send_message(
+            chat_id,
+            f"♻️ <b>Broadcast draft restored.</b>\n\nRecipients: <b>{recipients}</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            f"📨 Send to {recipients}",
+                            callback_data="broadcast:send",
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "❌ Cancel", callback_data="broadcast:cancel"
+                        )
+                    ],
+                ]
+            ),
+        )
+
+    @staticmethod
+    def pending_generation(
+        flow: str, unit: str, count: int, chat_id: int
+    ) -> dict[str, object]:
+        return {
+            "flow": flow,
+            "unit": unit,
+            "count": count,
+            "chat_id": chat_id,
+        }
+
+    async def resume_generation(
+        self,
+        application: TelegramApplication,
+        user_id: int,
+        pending: dict[object, object],
+    ) -> None:
+        flow = pending.get("flow")
+        unit = pending.get("unit")
+        count = pending.get("count")
+        chat_id = pending.get("chat_id")
+        if (
+            flow not in {"quiz", "full"}
+            or not isinstance(unit, str)
+            or not isinstance(count, int)
+            or not isinstance(chat_id, int)
+        ):
+            application.user_data[user_id].pop("pending_generation", None)
+            await self.persist_application_user_data(application, user_id)
+            return
+
+        self.busy_users.add(user_id)
+        completed = False
+        try:
+            await application.bot.send_message(
+                chat_id,
+                "♻️ <b>Bot restarted.</b> Resuming your request…\n\n"
+                "⏱ This can take around 1 minute.",
+                parse_mode=ParseMode.HTML,
+            )
+            source = self.catalog.select(unit)
+            questions = await self.generator.generate(source, count)
+            random.shuffle(questions)
+            if flow == "quiz":
+                session = Session(questions)
+                application.user_data[user_id]["session"] = session
+                application.user_data[user_id]["session_chat_id"] = chat_id
+                application.user_data[user_id].pop("pending_generation", None)
+                await self.persist_application_user_data(application, user_id)
+                await self.send_session_question(
+                    application.bot,
+                    chat_id,
+                    session,
+                    "✅ <b>Your restored quiz is ready.</b>",
+                )
+            else:
+                content = format_full_test(source, questions).encode("utf-8")
+                await application.bot.send_document(
+                    chat_id,
+                    document=InputFile(
+                        content,
+                        filename=f"cloze_test_{unit}_{len(questions)}_questions.txt",
+                    ),
+                    caption="✅ <b>Your restored full test is ready.</b>",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=self.MAIN_KEYBOARD,
+                )
+                application.user_data[user_id].pop("pending_generation", None)
+                await self.persist_application_user_data(application, user_id)
+            completed = True
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOGGER.exception("Could not resume generation for user %d", user_id)
+            application.user_data[user_id].pop("pending_generation", None)
+            await self.persist_application_user_data(application, user_id)
+            try:
+                await application.bot.send_message(
+                    chat_id,
+                    "⚠️ I could not restore the interrupted request. Please try again.",
+                    reply_markup=self.MAIN_KEYBOARD,
+                )
+            except TelegramError:
+                LOGGER.warning(
+                    "Could not notify user %d after recovery failure", user_id
+                )
+        finally:
+            self.busy_users.discard(user_id)
+            if completed:
+                LOGGER.info("Recovered pending %s request for user %d", flow, user_id)
 
     def settings(self, context: ContextTypes.DEFAULT_TYPE) -> UserSettings:
         user_data = self.user_data(context)
@@ -1315,6 +1639,7 @@ class QuizBot:
         user_data = self.user_data(context)
         user_data["broadcast_state"] = "awaiting_message"
         user_data.pop("broadcast_draft", None)
+        await self.persist_user_data(context, self.user_id(update))
         text = (
             "📣 <b>New Broadcast</b>\n\n"
             "Send the message to broadcast next. Text formatting, photos, videos, "
@@ -1335,6 +1660,7 @@ class QuizBot:
         user_data = self.user_data(context)
         user_data.pop("broadcast_state", None)
         user_data.pop("broadcast_draft", None)
+        await self.persist_user_data(context, self.user_id(update))
         text = "❌ <b>Broadcast cancelled.</b>"
         if update.callback_query:
             await self.safe_edit(update.callback_query, text)
@@ -1361,6 +1687,7 @@ class QuizBot:
             "chat_id": message.chat_id,
             "message_id": message.message_id,
         }
+        await self.persist_user_data(context, self.user_id(update))
         await context.bot.copy_message(
             chat_id=message.chat_id,
             from_chat_id=message.chat_id,
@@ -1424,9 +1751,10 @@ class QuizBot:
 
         user_data.pop("broadcast_state", None)
         user_data.pop("broadcast_draft", None)
+        await self.persist_user_data(context, self.user_id(update))
         recipients = await self.stats_store.broadcast_recipients()
         broadcast_id = await self.stats_store.create_broadcast(
-            self.user_id(update), len(recipients)
+            self.user_id(update), source_chat_id, source_message_id, recipients
         )
         await self.safe_edit(
             query,
@@ -1449,7 +1777,7 @@ class QuizBot:
 
     async def _deliver_broadcast(
         self,
-        query: CallbackQuery,
+        query: CallbackQuery | None,
         bot: Bot,
         broadcast_id: int,
         recipients: list[int],
@@ -1475,16 +1803,25 @@ class QuizBot:
                         message_id=source_message_id,
                     )
                 delivered += 1
+                await self.stats_store.mark_broadcast_delivery(
+                    broadcast_id, recipient_id, "delivered"
+                )
             except (Forbidden, BadRequest):
                 failed += 1
                 await self.stats_store.set_subscription(recipient_id, False)
+                await self.stats_store.mark_broadcast_delivery(
+                    broadcast_id, recipient_id, "failed"
+                )
             except TelegramError as error:
                 failed += 1
+                await self.stats_store.mark_broadcast_delivery(
+                    broadcast_id, recipient_id, "failed"
+                )
                 LOGGER.warning(
                     "Broadcast delivery to user %d failed: %s", recipient_id, error
                 )
 
-            if processed % 25 == 0 and processed < len(recipients):
+            if query and processed % 25 == 0 and processed < len(recipients):
                 await self.safe_edit(
                     query,
                     "📡 <b>Broadcasting…</b>\n\n"
@@ -1495,7 +1832,10 @@ class QuizBot:
                 )
             await asyncio.sleep(0.05)
 
-        await self.stats_store.finish_broadcast(broadcast_id, delivered, failed)
+        await self.stats_store.finish_broadcast(broadcast_id)
+        total, delivered_total, failed_total = await self.stats_store.broadcast_counts(
+            broadcast_id
+        )
         keyboard = InlineKeyboardMarkup(
             [
                 [
@@ -1509,14 +1849,22 @@ class QuizBot:
                 [InlineKeyboardButton("🏠 Main Menu", callback_data="menu:home")],
             ]
         )
-        await self.safe_edit(
-            query,
+        final_text = (
             "✅ <b>Broadcast complete.</b>\n\n"
-            f"👥 Recipients: <b>{len(recipients)}</b>\n"
-            f"✅ Delivered: <b>{delivered}</b>\n"
-            f"⚠️ Failed: <b>{failed}</b>",
-            reply_markup=keyboard,
+            f"👥 Recipients: <b>{total}</b>\n"
+            f"✅ Delivered: <b>{delivered_total}</b>\n"
+            f"⚠️ Failed: <b>{failed_total}</b>"
         )
+        if query:
+            await self.safe_edit(query, final_text, reply_markup=keyboard)
+        else:
+            await bot.send_message(
+                source_chat_id,
+                "♻️ <b>Interrupted broadcast resumed after restart.</b>\n\n"
+                + final_text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+            )
 
     async def show_admin_dashboard(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -1832,6 +2180,12 @@ class QuizBot:
             return
         source = self.catalog.select(unit)
         self.busy_users.add(user_id)
+        user_data = self.user_data(context)
+        if update.effective_chat:
+            user_data["pending_generation"] = self.pending_generation(
+                "quiz", unit, count, update.effective_chat.id
+            )
+            await self.persist_user_data(context, user_id)
         status = (
             "✨ <b>Building your quiz…</b>\n\n"
             f"📚 {html.escape(source.name)}\n"
@@ -1848,6 +2202,8 @@ class QuizBot:
             questions = await self.generator.generate(source, count)
         except Exception as error:
             LOGGER.error("Quiz generation failed: %s", error)
+            user_data.pop("pending_generation", None)
+            await self.persist_user_data(context, user_id)
             error_text = (
                 "⚠️ <b>I couldn't build that quiz.</b>\n\nPlease try again in a moment."
             )
@@ -1865,8 +2221,12 @@ class QuizBot:
             self.busy_users.discard(user_id)
 
         random.shuffle(questions)
-        self.user_data(context)["session"] = Session(questions)
+        session = Session(questions)
+        user_data["session"] = session
         if update.effective_chat:
+            user_data["session_chat_id"] = update.effective_chat.id
+            user_data.pop("pending_generation", None)
+            await self.persist_user_data(context, user_id)
             if update.callback_query:
                 await self.safe_edit(
                     update.callback_query,
@@ -1903,6 +2263,12 @@ class QuizBot:
             return
         source = self.catalog.select(unit)
         self.busy_users.add(user_id)
+        user_data = self.user_data(context)
+        if update.effective_chat:
+            user_data["pending_generation"] = self.pending_generation(
+                "full", unit, count, update.effective_chat.id
+            )
+            await self.persist_user_data(context, user_id)
         status = (
             "📝 <b>Preparing your full test…</b>\n\n"
             f"📚 {html.escape(source.name)}\n"
@@ -1919,6 +2285,8 @@ class QuizBot:
             questions = await self.generator.generate(source, count)
         except Exception as error:
             LOGGER.error("Full test generation failed: %s", error)
+            user_data.pop("pending_generation", None)
+            await self.persist_user_data(context, user_id)
             error_text = "⚠️ Test generation failed. Please try again."
             if update.callback_query:
                 await self.safe_edit(update.callback_query, error_text)
@@ -1948,6 +2316,8 @@ class QuizBot:
                 parse_mode=ParseMode.HTML,
                 reply_markup=self.MAIN_KEYBOARD,
             )
+            user_data.pop("pending_generation", None)
+            await self.persist_user_data(context, user_id)
 
     async def answer(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = update.effective_message
@@ -1989,6 +2359,7 @@ class QuizBot:
         if message.text == self.SKIP:
             question = session.questions[session.position]
             session.position += 1
+            await self.persist_user_data(context, player_id)
             if session.position == len(session.questions):
                 await self.finish_quiz(
                     message,
@@ -2021,6 +2392,7 @@ class QuizBot:
         if correct:
             session.correct += 1
         session.position += 1
+        await self.persist_user_data(context, player_id)
         feedback = (
             "✅ <b>Correct!</b> Excellent work."
             if correct
@@ -2048,6 +2420,15 @@ class QuizBot:
         session = self.user_data(context).get("session")
         if not isinstance(session, Session):
             return
+        await self.send_session_question(context.bot, chat_id, session, intro)
+
+    async def send_session_question(
+        self,
+        bot: Bot,
+        chat_id: int,
+        session: Session,
+        intro: str = "",
+    ) -> None:
         delivery = (id(session), session.position)
         if self.sent_deliveries.get(chat_id) == delivery:
             LOGGER.warning(
@@ -2063,7 +2444,7 @@ class QuizBot:
         intro_text = f"{intro}\n\n" if intro else ""
         self.sent_deliveries[chat_id] = delivery
         try:
-            await context.bot.send_message(
+            await bot.send_message(
                 chat_id,
                 f"{intro_text}🧩 <b>Question {session.position + 1} of {total}</b>\n"
                 f"{progress}\n\n"
@@ -2114,6 +2495,8 @@ class QuizBot:
         )
         self.sent_deliveries.pop(message.chat_id, None)
         self.user_data(context).pop("session", None)
+        self.user_data(context).pop("session_chat_id", None)
+        await self.persist_user_data(context, player_id)
 
 
 def normalize(value: str) -> str:
@@ -2194,7 +2577,7 @@ def build_application(
         .token(telegram_token)
         .concurrent_updates(MAX_CONCURRENT_UPDATES)
         .persistence(persistence)
-        .post_init(set_commands)
+        .post_init(bot.post_init)
         .post_shutdown(bot.shutdown)
         .build()
     )
