@@ -12,10 +12,11 @@ Mandatory answer rules:
 Mandatory sentence rules:
 1. Use the answer in a new context unrelated to the source text.
 2. Give enough context for one clear answer at the source text's language level.
-3. Avoid proper nouns and references to specific people, places, or events.
+3. Avoid proper nouns, pronouns, auxiliray verbs, prepositions, conjunctions, interjections and references to specific people, places, or events.
 4. Make every completed sentence natural, grammatical, and meaningful.
 5. Make every sentence and cloze pattern distinct; do not reuse a sentence with another blank or lightly reword an earlier item.
-6. Use relative difficulty weights of 40 easy, 40 medium, and 30 hard. For harder non-highlighted items, grammatical or derived forms are allowed only when that exact answer form occurs in the source.
+6. Use relative difficulty weights of 40 easy, 40 medium, and 30 hard. 
+7. For easier difficulties, use highlighted words only with no form change. For harder difficulties, use of non-highlighted words with or without grammatical or derived forms are allowed.
 
 Mandatory field rules:
 1. before contains all sentence text before the answer and stops exactly where the answer belongs.
@@ -26,7 +27,7 @@ Mandatory field rules:
 
 Before returning, verify every item against every rule. Remove and replace any invalid, ambiguous, repeated, or source-incompatible item so the final array still contains exactly {count} items.
 
-Style and difficulty references:
+The following are gold standard past quetions to be taken as style, format and difficulty references:
 
 Consuming food made with c_______ meat can lead to virus transmission.
 He was truly t_______ by the gifts his relatives brought him during his stay in the hospital.
